@@ -19,6 +19,8 @@ const SPAWNER_SPEED = 1.2;
 const SPAWNER_TURN_RATE = 0.2;
 const SPAWNER_PUSH_FRICTION = 0.92;
 const SPAWNER_DASH_PUSH = 12;
+const SPAWNER_BREAK_SPEED = 6;
+const SPAWNER_RESPAWN_MS = 3000;
 const COIN_SCATTER_DISTANCE = 90;
 const ARENA_BORDER_ONLY = [];
 const WALL_HIT_COIN_LOSS = 3;
@@ -43,6 +45,7 @@ const players = new Map();
 let coins = [];
 let arena = null;
 let spawner = null;
+let spawnerRespawnAt = 0;
 let phase = "playing";
 let roundWinner = null;
 let matchWinner = null;
@@ -169,7 +172,24 @@ const bounceOffWalls = (normal) => {
   spawner.pushY = push.y;
 };
 
+const breakSpawner = () => {
+  spawner = null;
+  spawnerRespawnAt = Date.now() + SPAWNER_RESPAWN_MS;
+};
+
+const respawnSpawnerWhenDue = () => {
+  if (spawner || Date.now() < spawnerRespawnAt) return;
+  spawner = createSpawner();
+  while (coins.length < CONFIG.coinCount) coins.push(spawnCoin());
+};
+
+const slammedIntoBorder = (normal) => {
+  const pushSpeed = Math.hypot(spawner.pushX, spawner.pushY);
+  return pushSpeed > SPAWNER_BREAK_SPEED && isHardHit(normal, spawner.pushX / pushSpeed, spawner.pushY / pushSpeed);
+};
+
 const moveSpawner = () => {
+  if (!spawner) return;
   spawner.heading += (Math.random() - 0.5) * SPAWNER_TURN_RATE;
   const normal = moveCircle(
     spawner,
@@ -178,6 +198,10 @@ const moveSpawner = () => {
     CONFIG.spawnerRadius,
     ARENA_BORDER_ONLY,
   );
+  if (slammedIntoBorder(normal)) {
+    breakSpawner();
+    return;
+  }
   spawner.pushX *= SPAWNER_PUSH_FRICTION;
   spawner.pushY *= SPAWNER_PUSH_FRICTION;
   bounceOffWalls(normal);
@@ -208,6 +232,10 @@ const pushSpawner = (player) => {
 
 const freshMotionState = () => ({
   dashTicks: 0,
+  aiming: false,
+  aimAngle: 0,
+  driftX: 0,
+  driftY: 0,
   dashX: 1,
   dashY: 0,
   faceX: 1,
@@ -290,11 +318,11 @@ const updatePhase = () => {
 };
 
 const collectCoins = (player) => {
-  coins = coins.map((coin) => {
-    if (Math.hypot(coin.x - player.x, coin.y - player.y) > player.radius + CONFIG.coinRadius) return coin;
+  coins = coins.flatMap((coin) => {
+    if (Math.hypot(coin.x - player.x, coin.y - player.y) > player.radius + CONFIG.coinRadius) return [coin];
     player.score += 1;
     player.dashCharge = Math.min(player.dashCharge + 1, CONFIG.dashCoinCost);
-    return spawnCoin();
+    return spawner ? [spawnCoin()] : [];
   });
   if (player.score >= CONFIG.winScore && phase === "playing") endRound(player);
 };
@@ -363,7 +391,7 @@ const broadcast = () => {
     matchWinner,
     pickSecondsLeft: phase === "intermission" ? Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000)) : 0,
     arena,
-    spawner: { x: spawner.x, y: spawner.y },
+    spawner: spawner && { x: spawner.x, y: spawner.y },
     coins,
     players: [...players.values()].map((player) => ({
       id: player.id,
@@ -379,6 +407,10 @@ const broadcast = () => {
       speed: player.speed,
       ack: player.ack,
       dashTicks: player.dashTicks,
+      aiming: player.aiming,
+      aimAngle: player.aimAngle,
+      driftX: player.driftX,
+      driftY: player.driftY,
       dashX: player.dashX,
       dashY: player.dashY,
       faceX: player.faceX,
@@ -397,8 +429,9 @@ const tick = () => {
   for (const player of players.values()) processInputs(player);
   for (const player of players.values()) applyKnockback(player);
   resolveCollisions();
+  respawnSpawnerWhenDue();
   moveSpawner();
-  for (const player of players.values()) pushSpawner(player);
+  if (spawner) for (const player of players.values()) pushSpawner(player);
   broadcast();
 };
 
@@ -424,7 +457,7 @@ const sanitizeKeys = (keys = {}) => ({
   down: Boolean(keys.down),
   left: Boolean(keys.left),
   right: Boolean(keys.right),
-  dash: Boolean(keys.dash),
+  aim: Boolean(keys.aim),
 });
 
 const server = http.createServer((req, res) => {

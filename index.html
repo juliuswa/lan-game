@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Space to dash and shove players — recharges after 5 coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim (A/D rotate the arrow, you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -39,7 +39,7 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const scoresList = document.getElementById("scores");
 const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
-const keys = { up: false, down: false, left: false, right: false };
+const keys = { up: false, down: false, left: false, right: false, aim: false };
 
 let socket = null;
 let playerId = null;
@@ -47,7 +47,6 @@ let latestState = null;
 let predicted = null;
 let pendingInputs = [];
 let nextSeq = 1;
-let dashRequested = false;
 let selectedPowerUp = 0;
 let snapshots = [];
 let lastScoresKey = "";
@@ -76,7 +75,7 @@ const setKey = (event, pressed) => {
   }
   if (event.code === "Space" && playerId) {
     event.preventDefault();
-    if (pressed && !event.repeat) dashRequested = true;
+    keys.aim = pressed;
     return;
   }
   const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
@@ -93,19 +92,15 @@ const reconcile = (state) => {
   const me = state.players.find((player) => player.id === playerId);
   if (!me) return;
   pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
-  const { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
-  predicted = { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
+  const { x, y, dashTicks, aiming, aimAngle, driftX, driftY, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
+  predicted = { x, y, dashTicks, aiming, aimAngle, driftX, driftY, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
   if (state.phase === "playing") for (const input of pendingInputs) applyInput(predicted, input.keys);
 };
 
 const simulateStep = () => {
-  if (!predicted || latestState.phase !== "playing") {
-    dashRequested = false;
-    return;
-  }
-  if (!isMoving() && !dashRequested && predicted.dashTicks === 0) return;
-  const input = { seq: nextSeq++, keys: { ...keys, dash: dashRequested } };
-  dashRequested = false;
+  if (!predicted || latestState.phase !== "playing") return;
+  if (!isMoving() && !keys.aim && !predicted.aiming && predicted.dashTicks === 0) return;
+  const input = { seq: nextSeq++, keys: { ...keys } };
   pendingInputs.push(input);
   applyInput(predicted, input.keys);
   socket.send(JSON.stringify({ type: "input", ...input }));
@@ -139,6 +134,28 @@ const drawDashCharge = (x, y, radius, charge) => {
   ctx.lineWidth = 3;
   ctx.strokeStyle = ready ? "#46f0f0" : "rgba(70,240,240,0.4)";
   ctx.stroke();
+};
+
+const drawAimArrow = (x, y, radius, angle, color) => {
+  const tip = radius + 22;
+  const base = radius + 6;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.moveTo(base, 0);
+  ctx.lineTo(tip - 6, 0);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(tip, 0);
+  ctx.lineTo(tip - 9, -6);
+  ctx.lineTo(tip - 9, 6);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.restore();
 };
 
 const drawSpawner = (x, y) => {
@@ -232,8 +249,10 @@ const drawMatchOver = () => {
 const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawArena();
-  const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
-  drawSpawner(spawnerPosition.x, spawnerPosition.y);
+  if (latestState.spawner) {
+    const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
+    drawSpawner(spawnerPosition.x, spawnerPosition.y);
+  }
   for (const coin of latestState.coins) drawCircle(coin.x, coin.y, CONFIG.coinRadius, "gold");
   for (const player of latestState.players) {
     const isMe = player.id === playerId;
@@ -247,6 +266,8 @@ const render = (now) => {
       ctx.stroke();
       drawDashCharge(x, y, player.radius, predicted.dashCharge);
     }
+    const aimSource = isMe ? predicted : player;
+    if (aimSource.aiming) drawAimArrow(x, y, player.radius, aimSource.aimAngle, isMe ? "white" : player.color);
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";
     ctx.textAlign = "center";
