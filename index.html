@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Space to dash and shove players — recharges after 5 coins. First to the target wins.</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Space to dash and shove players — recharges after 5 coins. First to the target wins.</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -93,18 +93,18 @@ const simulateStep = () => {
   socket.send(JSON.stringify({ type: "input", ...input }));
 };
 
-const interpolatedPosition = (id, renderTime) => {
+const interpolatedPosition = (select, renderTime) => {
   for (let i = snapshots.length - 1; i > 0; i--) {
     const older = snapshots[i - 1];
     if (older.time > renderTime) continue;
     const newer = snapshots[i];
-    const from = older.players.get(id);
-    const to = newer.players.get(id);
+    const from = select(older);
+    const to = select(newer);
     if (!from || !to) return to || from;
     const t = Math.min((renderTime - older.time) / (newer.time - older.time || 1), 1);
     return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
   }
-  return snapshots[0] && snapshots[0].players.get(id);
+  return snapshots[0] && select(snapshots[0]);
 };
 
 const drawCircle = (x, y, radius, color) => {
@@ -123,12 +123,27 @@ const drawDashCharge = (x, y, charge) => {
   ctx.stroke();
 };
 
+const drawSpawner = (x, y) => {
+  drawCircle(x, y, CONFIG.spawnerRadius, "#5a4510");
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "gold";
+  ctx.stroke();
+  ctx.fillStyle = "gold";
+  ctx.font = "bold 24px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("$", x, y);
+  ctx.textBaseline = "alphabetic";
+};
+
 const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
+  drawSpawner(spawnerPosition.x, spawnerPosition.y);
   for (const coin of latestState.coins) drawCircle(coin.x, coin.y, CONFIG.coinRadius, "gold");
   for (const player of latestState.players) {
     const isMe = player.id === playerId;
-    const { x, y } = (isMe ? predicted : interpolatedPosition(player.id, now - INTERPOLATION_DELAY_MS)) || player;
+    const { x, y } = (isMe ? predicted : interpolatedPosition((snapshot) => snapshot.players.get(player.id), now - INTERPOLATION_DELAY_MS)) || player;
     drawCircle(x, y, CONFIG.playerRadius, player.color);
     if (isMe) {
       ctx.lineWidth = 3;
@@ -167,7 +182,7 @@ const renderScores = (state) => {
 const receiveState = (state) => {
   const now = performance.now();
   latestState = state;
-  snapshots.push({ time: now, players: new Map(state.players.map((player) => [player.id, player])) });
+  snapshots.push({ time: now, spawner: state.spawner, players: new Map(state.players.map((player) => [player.id, player])) });
   snapshots = snapshots.filter((snapshot) => now - snapshot.time < SNAPSHOT_HISTORY_MS);
   reconcile(state);
   renderScores(state);

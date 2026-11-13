@@ -4,6 +4,7 @@
     height: 600,
     playerRadius: 16,
     coinRadius: 8,
+    spawnerRadius: 28,
     coinCount: 5,
     speed: 220,
     winScore: 20,
@@ -15,9 +16,15 @@
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
+  const clampToArena = (position, radius) => {
+    position.x = clamp(position.x, radius, CONFIG.width - radius);
+    position.y = clamp(position.y, radius, CONFIG.height - radius);
+  };
+
   const moveBy = (position, dx, dy) => {
-    position.x = clamp(position.x + dx, CONFIG.playerRadius, CONFIG.width - CONFIG.playerRadius);
-    position.y = clamp(position.y + dy, CONFIG.playerRadius, CONFIG.height - CONFIG.playerRadius);
+    position.x += dx;
+    position.y += dy;
+    clampToArena(position, CONFIG.playerRadius);
   };
 
   const canDash = (state) => state.dashTicks === 0 && state.dashCharge >= CONFIG.dashCoinCost;
@@ -49,4 +56,5 @@
   exports.CONFIG = CONFIG;
   exports.applyInput = applyInput;
   exports.moveBy = moveBy;
+  exports.clampToArena = clampToArena;
 })(typeof module === "undefined" ? (window.Shared = {}) : module.exports);
