@@ -31,7 +31,8 @@ const TRAP_RADIUS = 10;
 const MAX_TRAPS = 6;
 const TRAP_DROP_MIN_MS = 5000;
 const TRAP_DROP_MAX_MS = 15000;
-const TRAP_HOLD_MS = 5000;
+const LOCK_KEYS = ["w", "a", "s", "d"];
+const LOCK_LENGTH = 3;
 const COIN_SCATTER_DISTANCE = 90;
 const ARENA_BORDER_ONLY = [];
 const WALL_HIT_COIN_LOSS = 3;
@@ -275,7 +276,7 @@ const freshMotionState = () => ({
   knockX: 0,
   knockY: 0,
   invulnerableUntil: 0,
-  trappedUntil: 0,
+  lock: null,
 });
 
 const hitWall = (player) => {
@@ -329,14 +330,32 @@ const dropTrapWhenDue = () => {
   scheduleNextTrap();
 };
 
-const isTrapped = (player) => Date.now() < player.trappedUntil;
+const isTrapped = (player) => Boolean(player.lock);
+
+const randomLock = () => ({
+  combo: Array.from({ length: LOCK_LENGTH }, () => LOCK_KEYS[Math.floor(Math.random() * LOCK_KEYS.length)]),
+  progress: 0,
+});
+
+const enterLockKey = (player, key) => {
+  if (!player.lock || !LOCK_KEYS.includes(key)) return;
+  if (player.lock.combo[player.lock.progress] !== key) {
+    player.lock.progress = 0;
+    emit("unlockFail", { x: player.x, y: player.y, playerId: player.id });
+    return;
+  }
+  player.lock.progress += 1;
+  if (player.lock.progress < player.lock.combo.length) return;
+  player.lock = null;
+  emit("unlockSuccess", { x: player.x, y: player.y, radius: player.radius, color: player.color, playerId: player.id });
+};
 
 const stepOnTraps = (player) => {
   if (isTrapped(player)) return;
   const trap = traps.find((candidate) => Math.hypot(candidate.x - player.x, candidate.y - player.y) < player.radius + TRAP_RADIUS);
   if (!trap) return;
   traps = traps.filter((candidate) => candidate !== trap);
-  Object.assign(player, { trappedUntil: Date.now() + TRAP_HOLD_MS, dashTicks: 0, aiming: false });
+  Object.assign(player, { lock: randomLock(), dashTicks: 0, aiming: false });
   emit("trapSnap", { x: player.x, y: player.y, radius: player.radius, playerId: player.id });
 };
 
@@ -539,7 +558,7 @@ const broadcast = () => {
       dashCharge: player.dashCharge,
       hurt: Date.now() < player.invulnerableUntil,
       trapped: isTrapped(player),
-      trapSecondsLeft: Math.max(0, Math.ceil((player.trappedUntil - Date.now()) / 1000)),
+      lock: player.lock,
     })),
   });
   for (const player of players.values()) {
@@ -621,6 +640,8 @@ new WebSocketServer({ server }).on("connection", (socket) => {
       if (player.pendingInputs.length < MAX_QUEUED_INPUTS) {
         player.pendingInputs.push({ seq: message.seq, keys: sanitizeKeys(message.keys) });
       }
+    } else if (message.type === "unlockKey" && player && phase === "playing") {
+      enterLockKey(player, String(message.key));
     } else if (message.type === "bonusCoins" && player && phase === "playing") {
       awardBonusCoins(player);
     } else if (message.type === "pick" && player && phase === "intermission" && player.pendingPick) {

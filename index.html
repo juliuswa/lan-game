@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim at the mouse (you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps that hold you in place for 5s. Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim at the mouse (you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -47,6 +47,7 @@ let spawnerAppearedAt = 0;
 let lastRenderTime = performance.now();
 let mouse = null;
 const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
+const LOCK_KEYS = ["w", "a", "s", "d"];
 const keys = { up: false, down: false, left: false, right: false, aim: false };
 
 let socket = null;
@@ -84,6 +85,11 @@ const setKey = (event, pressed) => {
   }
   if (pressed && isPicking()) {
     handlePickKey(event);
+    return;
+  }
+  if (pressed && predicted && predicted.trapped && LOCK_KEYS.includes(event.key.toLowerCase())) {
+    event.preventDefault();
+    if (!event.repeat) socket.send(JSON.stringify({ type: "unlockKey", key: event.key.toLowerCase() }));
     return;
   }
   if (event.code === "Space" && playerId) {
@@ -246,7 +252,29 @@ const drawTrap = (trap) => {
   drawCircle(trap.x, trap.y, trap.radius * 0.35, "#c0392b");
 };
 
-const drawTrappedCage = (x, y, radius, secondsLeft) => {
+const drawLockCombo = (x, y, lock) => {
+  const box = 22;
+  const gap = 4;
+  const left = x - (lock.combo.length * box + (lock.combo.length - 1) * gap) / 2;
+  ctx.font = "bold 14px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  lock.combo.forEach((key, index) => {
+    const boxX = left + index * (box + gap);
+    const done = index < lock.progress;
+    const current = index === lock.progress;
+    ctx.fillStyle = done ? "#2ecc71" : current ? "#f5f5f5" : "#333";
+    ctx.fillRect(boxX, y, box, box);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = current ? "#ff4d4d" : "#111";
+    ctx.strokeRect(boxX, y, box, box);
+    ctx.fillStyle = done ? "#fff" : current ? "#111" : "#ddd";
+    ctx.fillText(key.toUpperCase(), boxX + box / 2, y + box / 2 + 1);
+  });
+  ctx.textBaseline = "alphabetic";
+};
+
+const drawTrappedCage = (x, y, radius, lock) => {
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#c0392b";
   for (let i = 0; i < 4; i++) {
@@ -256,12 +284,7 @@ const drawTrappedCage = (x, y, radius, secondsLeft) => {
     ctx.lineTo(x + Math.cos(angle) * (radius + 8), y + Math.sin(angle) * (radius + 8));
     ctx.stroke();
   }
-  ctx.fillStyle = "white";
-  ctx.font = "bold 14px system-ui";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(String(secondsLeft), x, y);
-  ctx.textBaseline = "alphabetic";
+  drawLockCombo(x, y - radius - 48, lock);
 };
 
 const drawSpawner = (x, y, scale) => {
@@ -384,7 +407,7 @@ const render = (now) => {
       drawDashCharge(x, y, player.radius, predicted.dashCharge);
     }
     const aimSource = isMe ? predicted : player;
-    if (player.trapped) drawTrappedCage(x, y, player.radius, player.trapSecondsLeft);
+    if (player.trapped) drawTrappedCage(x, y, player.radius, player.lock);
     if (aimSource.aiming) drawAimArrow(x, y, player.radius, aimSource.aimAngle, isMe ? "white" : player.color);
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";

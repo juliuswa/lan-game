@@ -118,6 +118,17 @@
         floatText(event.x, event.y - event.radius - 22, "TRAPPED!", "#ff4d4d", 18);
         addShake(event.playerId === myId ? 8 : 2);
       },
+      unlockFail: (event, myId, now) => {
+        burst({ x: event.x, y: event.y, count: 8, colors: RED, speed: 160, life: 0.3, size: 3 });
+        floatText(event.x, event.y - 70, "WRONG!", "#ff4d4d", 16);
+        flash(event.playerId, now, 120);
+        if (event.playerId === myId) addShake(5);
+      },
+      unlockSuccess: (event) => {
+        burst({ x: event.x, y: event.y, count: 24, colors: [event.color, "#2ecc71", "#fff"], speed: 300, life: 0.5, size: 4 });
+        ring(event.x, event.y, "#2ecc71", event.radius, event.radius * 3, 0.35, 4);
+        floatText(event.x, event.y - event.radius - 22, "FREE!", "#2ecc71", 20);
+      },
       playerSpawn: (event) => {
         ring(event.x, event.y, event.color, event.radius * 3, event.radius, 0.45, 3);
         burst({ x: event.x, y: event.y, count: 14, colors: [event.color, "#fff"], speed: 150, life: 0.45, size: 3, inward: true });
