@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Press Space to dash toward the mouse and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot — red ones also cost 3 coins. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Chaos pickups appear now and then: ⇄ swaps places with a random player, $ swaps coins with a random player, 🔒 traps everyone else. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Press Space to dash toward the mouse and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot — red ones also cost 3 coins. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Chaos pickups appear now and then: ⇄ swaps places with a random player, $ swaps coins with a random player, 🔒 traps everyone else. Every round starts once all players pressed Space to ready up. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -90,7 +90,9 @@ const setKey = (event, pressed) => {
   }
   if (event.code === "Space" && playerId) {
     event.preventDefault();
-    if (pressed && !event.repeat) dashRequested = true;
+    if (!pressed || event.repeat) return;
+    if (latestState && latestState.phase === "ready") socket.send(JSON.stringify({ type: "ready" }));
+    else dashRequested = true;
     return;
   }
   const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
@@ -414,6 +416,34 @@ const drawIntermission = () => {
   );
 };
 
+const drawReadyCheck = () => {
+  const players = latestState.players;
+  const readyCount = players.filter((player) => player.ready).length;
+  const me = myPlayer();
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = "center";
+  ctx.fillStyle = "white";
+  ctx.font = "bold 36px system-ui";
+  ctx.fillText(me && me.ready ? "Waiting for others…" : "Press SPACE when ready", canvas.width / 2, 170);
+  ctx.font = "20px system-ui";
+  ctx.fillStyle = "#ccc";
+  ctx.fillText(readyCount + " / " + players.length + " ready", canvas.width / 2, 210);
+  const rowHeight = 30;
+  const top = 260;
+  players.forEach((player, index) => {
+    const y = top + index * rowHeight;
+    ctx.font = "bold 20px system-ui";
+    ctx.textAlign = "right";
+    ctx.fillStyle = player.color;
+    ctx.fillText(player.name, canvas.width / 2 - 16, y);
+    ctx.textAlign = "left";
+    ctx.fillStyle = player.ready ? "#2ecc71" : "#888";
+    ctx.fillText(player.ready ? "✓ ready" : "… not ready", canvas.width / 2 + 16, y);
+  });
+  ctx.textAlign = "center";
+};
+
 const drawMatchOver = () => {
   drawOverlayTitle(`${latestState.matchWinner} wins the match!`, canvas.height / 2);
   ctx.font = "20px system-ui";
@@ -461,6 +491,7 @@ const render = (now) => {
   }
   effects.draw();
   ctx.restore();
+  if (latestState.phase === "ready") drawReadyCheck();
   if (latestState.phase === "intermission") drawIntermission();
   if (latestState.phase === "matchOver") drawMatchOver();
 };

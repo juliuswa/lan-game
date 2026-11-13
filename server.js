@@ -296,7 +296,7 @@ const hitWall = (player) => {
 const emptyPowerUps = () => Object.fromEntries(POWER_UPS.map(({ key }) => [key, 0]));
 
 const placeForNewRound = (player) => {
-  Object.assign(player, statsFor(player.powerUps), freshMotionState(), { score: 0, pendingPick: false });
+  Object.assign(player, statsFor(player.powerUps), freshMotionState(), { score: 0, pendingPick: false, ready: false });
   Object.assign(player, randomPosition(player.radius));
   emit("playerSpawn", { x: player.x, y: player.y, radius: player.radius, color: player.color });
 };
@@ -441,20 +441,27 @@ const fallIntoBlackHoles = (player) => {
   emit("teleport", { fromX: from.x, fromY: from.y, toX: player.x, toY: player.y, radius: player.radius, color: player.color, playerId: player.id, draining: hole.draining, lost });
 };
 
-const startRound = () => {
+const prepareRound = () => {
   blackHoles = [];
   traps = [];
   chaosPickups = [];
-  scheduleNextChaos();
-  scheduleNextTrap();
-  scheduleNextBlackHole();
   arena = generateArena();
   spawner = createSpawner();
   coins = Array.from({ length: CONFIG.coinCount }, spawnCoin);
   for (const player of players.values()) placeForNewRound(player);
-  phase = "playing";
+  phase = "ready";
   roundWinner = null;
 };
+
+const beginPlay = () => {
+  scheduleNextChaos();
+  scheduleNextTrap();
+  scheduleNextBlackHole();
+  phase = "playing";
+  emit("roundStart", {});
+};
+
+const everyoneReady = () => players.size > 0 && [...players.values()].every((player) => player.ready);
 
 const startMatch = () => {
   for (const player of players.values()) {
@@ -462,7 +469,7 @@ const startMatch = () => {
     player.powerUps = emptyPowerUps();
   }
   matchWinner = null;
-  startRound();
+  prepareRound();
 };
 
 const endRound = (winnerPlayer) => {
@@ -495,10 +502,12 @@ const updatePhase = () => {
     const waiting = [...players.values()].filter((player) => player.pendingPick);
     if (now >= phaseEndsAt) {
       for (const player of waiting) grantPowerUp(player, randomPowerUpKey());
-      startRound();
+      prepareRound();
     } else if (waiting.length === 0 && now >= phaseMinEndsAt) {
-      startRound();
+      prepareRound();
     }
+  } else if (phase === "ready" && everyoneReady()) {
+    beginPlay();
   } else if (phase === "matchOver" && now >= phaseEndsAt) {
     startMatch();
   }
@@ -623,6 +632,7 @@ const broadcast = () => {
       roundWins: player.roundWins,
       powerUps: player.powerUps,
       pendingPick: player.pendingPick,
+      ready: player.ready,
       radius: player.radius,
       speed: player.speed,
       ack: player.ack,
@@ -718,6 +728,8 @@ new WebSocketServer({ server }).on("connection", (socket) => {
       if (player.pendingInputs.length < MAX_QUEUED_INPUTS) {
         player.pendingInputs.push({ seq: message.seq, keys: sanitizeKeys(message.keys) });
       }
+    } else if (message.type === "ready" && player && phase === "ready") {
+      player.ready = !player.ready;
     } else if (message.type === "unlockKey" && player && phase === "playing") {
       enterLockKey(player, String(message.key));
     } else if (message.type === "pick" && player && phase === "intermission" && player.pendingPick) {

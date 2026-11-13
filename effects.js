@@ -167,6 +167,10 @@
         ring(event.x, event.y, "#2ecc71", event.radius, event.radius * 3, 0.35, 4);
         floatText(event.x, event.y - event.radius - 22, "FREE!", "#2ecc71", 20);
       },
+      roundStart: () => {
+        floatText(400, 300, "GO!", "#2ecc71", 64);
+        addShake(4);
+      },
       playerSpawn: (event) => {
         ring(event.x, event.y, event.color, event.radius * 3, event.radius, 0.45, 3);
         burst({ x: event.x, y: event.y, count: 14, colors: [event.color, "#fff"], speed: 150, life: 0.45, size: 3, inward: true });
