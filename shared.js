@@ -13,7 +13,6 @@
     dashTicks: 8,
     dashDiameters: 3,
     dashCoinCost: 3,
-    aimSpeedFactor: 0.4,
     hardHitThreshold: 0.5,
   };
 
@@ -169,40 +168,20 @@
 
   const canDash = (state) => state.dashTicks === 0 && state.dashCharge >= CONFIG.dashCoinCost;
 
-  const startAiming = (state, dx, dy) => {
-    const length = Math.hypot(dx, dy) || 1;
-    state.aiming = true;
-    state.aimAngle = Math.atan2(state.faceY, state.faceX);
-    state.driftX = dx / length;
-    state.driftY = dy / length;
-  };
-
-  const releaseDash = (state) => {
-    state.aiming = false;
+  const startDash = (state, angle) => {
     state.dashCharge = 0;
     state.dashTicks = CONFIG.dashTicks;
-    state.dashX = Math.cos(state.aimAngle);
-    state.dashY = Math.sin(state.aimAngle);
+    state.dashX = Math.cos(angle);
+    state.dashY = Math.sin(angle);
     state.faceX = state.dashX;
     state.faceY = state.dashY;
-  };
-
-  const aim = (state) => {
-    const distance = state.speed * CONFIG.aimSpeedFactor * CONFIG.stepSeconds;
-    moveBy(state, state.driftX * distance, state.driftY * distance);
   };
 
   const applyInput = (state, keys) => {
     const dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
     const dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
     const length = Math.hypot(dx, dy) || 1;
-    if (!state.aiming && keys.aim && canDash(state)) startAiming(state, dx, dy);
-    if (state.aiming && Number.isFinite(keys.aimAngle)) state.aimAngle = keys.aimAngle;
-    if (state.aiming && keys.aim) {
-      aim(state);
-      return false;
-    }
-    if (state.aiming) releaseDash(state);
+    if (keys.dash && canDash(state)) startDash(state, Number.isFinite(keys.aimAngle) ? keys.aimAngle : Math.atan2(state.faceY, state.faceX));
     if (dx || dy) {
       state.faceX = dx / length;
       state.faceY = dy / length;

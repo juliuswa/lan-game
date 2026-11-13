@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim at the mouse (you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Press Space to dash toward the mouse and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -48,7 +48,8 @@ let lastRenderTime = performance.now();
 let mouse = null;
 const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
 const LOCK_KEYS = ["w", "a", "s", "d"];
-const keys = { up: false, down: false, left: false, right: false, aim: false };
+const keys = { up: false, down: false, left: false, right: false };
+let dashRequested = false;
 
 let socket = null;
 let playerId = null;
@@ -94,7 +95,7 @@ const setKey = (event, pressed) => {
   }
   if (event.code === "Space" && playerId) {
     event.preventDefault();
-    keys.aim = pressed;
+    if (pressed && !event.repeat) dashRequested = true;
     return;
   }
   const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
@@ -121,16 +122,20 @@ const reconcile = (state) => {
   const me = state.players.find((player) => player.id === playerId);
   if (!me) return;
   pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
-  const { x, y, dashTicks, aiming, aimAngle, driftX, driftY, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
-  predicted = { x, y, dashTicks, aiming, aimAngle, driftX, driftY, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
+  const { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
+  predicted = { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
   predicted.trapped = me.trapped;
   if (state.phase === "playing" && !me.trapped) for (const input of pendingInputs) applyInput(predicted, input.keys);
 };
 
 const simulateStep = () => {
-  if (!predicted || latestState.phase !== "playing" || predicted.trapped) return;
-  if (!isMoving() && !keys.aim && !predicted.aiming && predicted.dashTicks === 0) return;
-  const input = { seq: nextSeq++, keys: { ...keys, aimAngle: mouseAimAngle() } };
+  if (!predicted || latestState.phase !== "playing" || predicted.trapped) {
+    dashRequested = false;
+    return;
+  }
+  if (!isMoving() && !dashRequested && predicted.dashTicks === 0) return;
+  const input = { seq: nextSeq++, keys: { ...keys, dash: dashRequested, aimAngle: mouseAimAngle() } };
+  dashRequested = false;
   pendingInputs.push(input);
   applyInput(predicted, input.keys);
   socket.send(JSON.stringify({ type: "input", ...input }));
@@ -406,9 +411,8 @@ const render = (now) => {
       ctx.stroke();
       drawDashCharge(x, y, player.radius, predicted.dashCharge);
     }
-    const aimSource = isMe ? predicted : player;
     if (player.trapped) drawTrappedCage(x, y, player.radius, player.lock);
-    if (aimSource.aiming) drawAimArrow(x, y, player.radius, aimSource.aimAngle, isMe ? "white" : player.color);
+    if (isMe && mouse && predicted.dashCharge >= CONFIG.dashCoinCost) drawAimArrow(x, y, player.radius, mouseAimAngle(), "white");
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";
     ctx.textAlign = "center";

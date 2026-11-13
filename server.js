@@ -18,8 +18,8 @@ const KNOCKBACK_MIN_SPEED = 0.2;
 const SPAWNER_SPEED = 1.2;
 const SPAWNER_TURN_RATE = 0.2;
 const SPAWNER_PUSH_FRICTION = 0.92;
-const SPAWNER_DASH_PUSH = 12;
-const SPAWNER_BREAK_SPEED = 6;
+const SPAWNER_DASH_PUSH = 14;
+const SPAWNER_BREAK_SPEED = 2.5;
 const SPAWNER_RESPAWN_MS = 3000;
 const BLACK_HOLE_RADIUS = 22;
 const MAX_BLACK_HOLES = 2;
@@ -264,10 +264,6 @@ const pushSpawner = (player) => {
 
 const freshMotionState = () => ({
   dashTicks: 0,
-  aiming: false,
-  aimAngle: 0,
-  driftX: 0,
-  driftY: 0,
   dashX: 1,
   dashY: 0,
   faceX: 1,
@@ -355,14 +351,14 @@ const stepOnTraps = (player) => {
   const trap = traps.find((candidate) => Math.hypot(candidate.x - player.x, candidate.y - player.y) < player.radius + TRAP_RADIUS);
   if (!trap) return;
   traps = traps.filter((candidate) => candidate !== trap);
-  Object.assign(player, { lock: randomLock(), dashTicks: 0, aiming: false });
+  Object.assign(player, { lock: randomLock(), dashTicks: 0 });
   emit("trapSnap", { x: player.x, y: player.y, radius: player.radius, playerId: player.id });
 };
 
 const fallIntoBlackHoles = (player) => {
   if (!blackHoles.some((hole) => Math.hypot(hole.x - player.x, hole.y - player.y) < BLACK_HOLE_RADIUS)) return;
   const from = { x: player.x, y: player.y };
-  Object.assign(player, randomPosition(player.radius), { dashTicks: 0, aiming: false, knockX: 0, knockY: 0 });
+  Object.assign(player, randomPosition(player.radius), { dashTicks: 0, knockX: 0, knockY: 0 });
   emit("teleport", { fromX: from.x, fromY: from.y, toX: player.x, toY: player.y, radius: player.radius, color: player.color, playerId: player.id });
 };
 
@@ -547,10 +543,6 @@ const broadcast = () => {
       speed: player.speed,
       ack: player.ack,
       dashTicks: player.dashTicks,
-      aiming: player.aiming,
-      aimAngle: player.aimAngle,
-      driftX: player.driftX,
-      driftY: player.driftY,
       dashX: player.dashX,
       dashY: player.dashY,
       faceX: player.faceX,
@@ -608,7 +600,7 @@ const sanitizeKeys = (keys = {}) => ({
   down: Boolean(keys.down),
   left: Boolean(keys.left),
   right: Boolean(keys.right),
-  aim: Boolean(keys.aim),
+  dash: Boolean(keys.dash),
   aimAngle: Number.isFinite(keys.aimAngle) ? keys.aimAngle : undefined,
 });
 
