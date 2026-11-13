@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Collect coins — first to the target wins.</p>
+<p>Move with WASD / arrow keys. Space to dash and shove players — recharges after 5 coins. First to the target wins.</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -47,6 +47,7 @@ let latestState = null;
 let predicted = null;
 let pendingInputs = [];
 let nextSeq = 1;
+let dashRequested = false;
 let snapshots = [];
 let lastScoresKey = "";
 let accumulator = 0;
@@ -55,6 +56,11 @@ let lastFrameTime = performance.now();
 const isMoving = () => keys.up || keys.down || keys.left || keys.right;
 
 const setKey = (event, pressed) => {
+  if (event.code === "Space" && playerId) {
+    event.preventDefault();
+    if (pressed && !event.repeat) dashRequested = true;
+    return;
+  }
   const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
   if (!direction || !playerId) return;
   event.preventDefault();
@@ -69,13 +75,19 @@ const reconcile = (state) => {
   const me = state.players.find((player) => player.id === playerId);
   if (!me) return;
   pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
-  predicted = { x: me.x, y: me.y };
+  const { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge } = me;
+  predicted = { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge };
   if (!state.winner) for (const input of pendingInputs) applyInput(predicted, input.keys);
 };
 
 const simulateStep = () => {
-  if (!predicted || latestState.winner || !isMoving()) return;
-  const input = { seq: nextSeq++, keys: { ...keys } };
+  if (!predicted || latestState.winner) {
+    dashRequested = false;
+    return;
+  }
+  if (!isMoving() && !dashRequested && predicted.dashTicks === 0) return;
+  const input = { seq: nextSeq++, keys: { ...keys, dash: dashRequested } };
+  dashRequested = false;
   pendingInputs.push(input);
   applyInput(predicted, input.keys);
   socket.send(JSON.stringify({ type: "input", ...input }));
@@ -102,6 +114,15 @@ const drawCircle = (x, y, radius, color) => {
   ctx.fill();
 };
 
+const drawDashCharge = (x, y, charge) => {
+  const ready = charge >= CONFIG.dashCoinCost;
+  ctx.beginPath();
+  ctx.arc(x, y, CONFIG.playerRadius + 6, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * charge) / CONFIG.dashCoinCost);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = ready ? "#46f0f0" : "rgba(70,240,240,0.4)";
+  ctx.stroke();
+};
+
 const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   for (const coin of latestState.coins) drawCircle(coin.x, coin.y, CONFIG.coinRadius, "gold");
@@ -113,6 +134,7 @@ const render = (now) => {
       ctx.lineWidth = 3;
       ctx.strokeStyle = "white";
       ctx.stroke();
+      drawDashCharge(x, y, predicted.dashCharge);
     }
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";

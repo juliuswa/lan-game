@@ -3,13 +3,16 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { WebSocketServer, WebSocket } = require("ws");
-const { CONFIG, applyInput } = require("./shared");
+const { CONFIG, applyInput, moveBy } = require("./shared");
 
 const PORT = 3000;
 const TICK_MS = 1000 / 60;
 const MAX_INPUTS_PER_TICK = 8;
 const MAX_QUEUED_INPUTS = 120;
 const ROUND_RESTART_MS = 4000;
+const KNOCKBACK_SPEED = 15;
+const KNOCKBACK_FRICTION = 0.9;
+const KNOCKBACK_MIN_SPEED = 0.2;
 const COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe"];
 const STATIC_FILES = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
@@ -28,10 +31,21 @@ const randomPosition = (margin) => ({
 
 const spawnCoin = () => randomPosition(CONFIG.coinRadius * 2);
 
+const freshMotionState = () => ({
+  dashTicks: 0,
+  dashX: 1,
+  dashY: 0,
+  faceX: 1,
+  faceY: 0,
+  dashCharge: CONFIG.dashCoinCost,
+  knockX: 0,
+  knockY: 0,
+});
+
 const resetRound = () => {
   coins = Array.from({ length: CONFIG.coinCount }, spawnCoin);
   for (const player of players.values()) {
-    Object.assign(player, randomPosition(CONFIG.playerRadius), { score: 0 });
+    Object.assign(player, randomPosition(CONFIG.playerRadius), freshMotionState(), { score: 0 });
   }
   winner = null;
 };
@@ -40,6 +54,7 @@ const collectCoins = (player) => {
   coins = coins.map((coin) => {
     if (Math.hypot(coin.x - player.x, coin.y - player.y) > CONFIG.playerRadius + CONFIG.coinRadius) return coin;
     player.score += 1;
+    player.dashCharge = Math.min(player.dashCharge + 1, CONFIG.dashCoinCost);
     return spawnCoin();
   });
   if (player.score >= CONFIG.winScore && !winner) {
@@ -57,12 +72,55 @@ const processInputs = (player) => {
   }
 };
 
+const applyKnockback = (player) => {
+  if (!player.knockX && !player.knockY) return;
+  moveBy(player, player.knockX, player.knockY);
+  player.knockX *= KNOCKBACK_FRICTION;
+  player.knockY *= KNOCKBACK_FRICTION;
+  if (Math.hypot(player.knockX, player.knockY) < KNOCKBACK_MIN_SPEED) {
+    player.knockX = 0;
+    player.knockY = 0;
+  }
+};
+
+const knockBack = (attacker, victim, normalX, normalY) => {
+  attacker.dashTicks = 0;
+  victim.knockX = normalX * KNOCKBACK_SPEED;
+  victim.knockY = normalY * KNOCKBACK_SPEED;
+};
+
+const resolveCollision = (a, b) => {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const distance = Math.hypot(dx, dy);
+  const minDistance = CONFIG.playerRadius * 2;
+  if (distance >= minDistance) return;
+  const normalX = distance ? dx / distance : 1;
+  const normalY = distance ? dy / distance : 0;
+  const halfOverlap = (minDistance - distance) / 2;
+  moveBy(a, -normalX * halfOverlap, -normalY * halfOverlap);
+  moveBy(b, normalX * halfOverlap, normalY * halfOverlap);
+  const aDashing = a.dashTicks > 0;
+  const bDashing = b.dashTicks > 0;
+  if (aDashing) knockBack(a, b, normalX, normalY);
+  if (bDashing) knockBack(b, a, -normalX, -normalY);
+};
+
+const resolveCollisions = () => {
+  const list = [...players.values()];
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) resolveCollision(list[i], list[j]);
+  }
+};
+
 const broadcast = () => {
   const message = JSON.stringify({
     type: "state",
     winner,
     coins,
-    players: [...players.values()].map(({ id, name, color, x, y, score, ack }) => ({ id, name, color, x, y, score, ack })),
+    players: [...players.values()].map(({ id, name, color, x, y, score, ack, dashTicks, dashX, dashY, faceX, faceY, dashCharge }) => ({
+      id, name, color, x, y, score, ack, dashTicks, dashX, dashY, faceX, faceY, dashCharge,
+    })),
   });
   for (const player of players.values()) {
     if (player.socket.readyState === WebSocket.OPEN) player.socket.send(message);
@@ -71,6 +129,8 @@ const broadcast = () => {
 
 const tick = () => {
   for (const player of players.values()) processInputs(player);
+  for (const player of players.values()) applyKnockback(player);
+  resolveCollisions();
   broadcast();
 };
 
@@ -85,6 +145,7 @@ const createPlayer = (name, socket) => {
     pendingInputs: [],
     socket,
     ...randomPosition(CONFIG.playerRadius),
+    ...freshMotionState(),
   };
   players.set(id, player);
   return player;
@@ -95,6 +156,7 @@ const sanitizeKeys = (keys = {}) => ({
   down: Boolean(keys.down),
   left: Boolean(keys.left),
   right: Boolean(keys.right),
+  dash: Boolean(keys.dash),
 });
 
 const server = http.createServer((req, res) => {
