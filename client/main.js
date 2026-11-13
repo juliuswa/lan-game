@@ -1,6 +1,7 @@
 import { createWorld } from "./world.js";
 import { createEffects } from "./effects.js";
 import { createHud } from "./hud.js";
+import { createAudio, musicLevelFor } from "./audio.js";
 
 const { CONFIG, POWER_UPS, applyInput, setArena } = window.Shared;
 const INTERPOLATION_DELAY_MS = 50;
@@ -13,6 +14,8 @@ const LOCK_KEYS = ["w", "a", "s", "d"];
 const stage = document.getElementById("stage");
 const world = createWorld(stage);
 const effects = createEffects(world.scene);
+const audio = createAudio();
+const muteButton = document.getElementById("mute");
 const hud = createHud({ scoreList: document.getElementById("scores"), overlay: document.getElementById("overlay") });
 
 const keys = { up: false, down: false, left: false, right: false };
@@ -30,6 +33,8 @@ let accumulator = 0;
 let lastFrameTime = performance.now();
 let trailToggle = false;
 const lastPositions = new Map();
+const lastDashTicks = new Map();
+let lastLockProgress = 0;
 
 const directionOf = (event) => KEY_DIRECTIONS[event.key.length === 1 ? event.key.toLowerCase() : event.key];
 const isMoving = () => keys.up || keys.down || keys.left || keys.right;
@@ -41,13 +46,32 @@ const handlePickKey = (event) => {
   const direction = directionOf(event);
   if (direction === "left" || direction === "up") selectedPowerUp = (selectedPowerUp + POWER_UPS.length - 1) % POWER_UPS.length;
   else if (direction === "right" || direction === "down") selectedPowerUp = (selectedPowerUp + 1) % POWER_UPS.length;
-  else if (event.code === "Space" && !event.repeat) send({ type: "pick", powerUp: POWER_UPS[selectedPowerUp].key });
-  else return;
+  else if (event.code === "Space" && !event.repeat) {
+    send({ type: "pick", powerUp: POWER_UPS[selectedPowerUp].key });
+    audio.uiConfirm();
+    event.preventDefault();
+    return;
+  } else return;
+  audio.uiMove();
   event.preventDefault();
+};
+
+const updateMuteButton = () => {
+  muteButton.textContent = audio.isMuted() ? "🔇" : "🔊";
+};
+
+const toggleMute = () => {
+  audio.unlock();
+  audio.toggleMute();
+  updateMuteButton();
 };
 
 const setKey = (event, pressed) => {
   if (!playerId) return;
+  if (pressed && event.key.toLowerCase() === "m" && !event.repeat) {
+    toggleMute();
+    return;
+  }
   if (pressed && isPicking()) {
     handlePickKey(event);
     return;
@@ -60,7 +84,10 @@ const setKey = (event, pressed) => {
   if (event.code === "Space") {
     event.preventDefault();
     if (!pressed || event.repeat) return;
-    if (latestState && latestState.phase === "ready") send({ type: "ready" });
+    if (latestState && latestState.phase === "ready") {
+      send({ type: "ready" });
+      audio.uiConfirm();
+    }
     else dashRequested = true;
     return;
   }
@@ -69,6 +96,9 @@ const setKey = (event, pressed) => {
   event.preventDefault();
   keys[direction] = pressed;
 };
+
+muteButton.addEventListener("click", toggleMute);
+updateMuteButton();
 
 addEventListener("keydown", (event) => setKey(event, true));
 addEventListener("keyup", (event) => setKey(event, false));
@@ -101,7 +131,9 @@ const simulateStep = () => {
   const input = { seq: nextSeq++, keys: { ...keys, dash: dashRequested, aimAngle: mouseAimAngle() } };
   dashRequested = false;
   pendingInputs.push(input);
+  const wasDashing = predicted.dashTicks > 0;
   applyInput(predicted, input.keys);
+  if (!wasDashing && predicted.dashTicks > 0) audio.dash(true, predicted.x);
   send({ type: "input", ...input });
 };
 
@@ -152,8 +184,30 @@ const emitAmbientEffects = (view) => {
   for (const hole of view.blackHoles) effects.blackHoleSuction(hole.x, hole.y, hole.radius, hole.draining);
 };
 
+const playStateSounds = (previous, state) => {
+  for (const player of state.players) {
+    const before = lastDashTicks.get(player.id) || 0;
+    if (player.id !== playerId && before === 0 && player.dashTicks > 0) audio.dash(false, player.x);
+    lastDashTicks.set(player.id, player.dashTicks);
+  }
+  const me = state.players.find((player) => player.id === playerId);
+  if (me) {
+    const progress = me.lock ? me.lock.progress : 0;
+    if (progress > lastLockProgress) audio.lockStep();
+    lastLockProgress = progress;
+    audio.setTrapped(me.trapped);
+  }
+  if (previous && previous.phase === "playing" && state.phase !== "playing" && me) {
+    const matchOver = state.phase === "matchOver";
+    audio.roundEnd((matchOver ? state.matchWinner : state.roundWinner) === me.name, matchOver);
+  }
+  audio.setMusicLevel(musicLevelFor(state));
+};
+
 const receiveState = (state) => {
   const now = performance.now();
+  playStateSounds(latestState, state);
+  for (const event of state.events) audio.handleEvent(event, playerId);
   latestState = state;
   setArena(state.arena);
   for (const event of state.events) effects.handleEvent(event, playerId, now, world);
@@ -183,6 +237,7 @@ const frame = (now) => {
 document.getElementById("join").addEventListener("submit", (event) => {
   event.preventDefault();
   const name = document.getElementById("name").value;
+  audio.unlock();
   socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`);
   socket.onopen = () => send({ type: "join", name });
   socket.onmessage = (message) => {

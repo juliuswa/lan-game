@@ -42,6 +42,8 @@
   .score-rounds { grid-column: 1 / -1; color: var(--gold); font-size: 13px; letter-spacing: 2px; }
   .score-powerups { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
 
+  #mute { position: fixed; top: 16px; right: 16px; width: 44px; height: 44px; padding: 0; font-size: 20px; display: none; z-index: 5; color: var(--text); }
+  body.in-game #mute { display: block; }
   #help { position: fixed; bottom: 16px; left: 16px; max-width: 420px; padding: 10px 14px; font-size: 13px; color: var(--muted); display: none; z-index: 5; }
   body.in-game #help { display: block; }
   #help summary { cursor: pointer; color: var(--text); font-weight: 600; }
@@ -95,9 +97,11 @@
   <ul id="scores"></ul>
 </aside>
 
+<button id="mute" class="panel" title="Toggle sound (M)"></button>
+
 <details id="help" class="panel">
   <summary>How to play</summary>
-  <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Space</kbd> dash toward the mouse (recharges after 3 coins) and ready up between rounds.</p>
+  <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Space</kbd> dash toward the mouse (recharges after 3 coins) and ready up between rounds. <kbd>M</kbd> toggles sound.</p>
   <p>Coins spill from the goldpot — slam it into the arena edge to break it. Walls cost 3 coins on a hard hit. Black holes teleport you; red ones also cost 3 coins. Traps lock you until you type the shown W/A/S/D combination.</p>
   <p>Chaos gems: ⇄ swap places, $ swap coins, 🔒 trap everyone else. The round's lowest scorer picks a power-up.</p>
 </details>

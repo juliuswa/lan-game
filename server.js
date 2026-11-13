@@ -62,6 +62,7 @@ const STATIC_FILES = {
   "/client/world.js": { file: "client/world.js", type: "text/javascript; charset=utf-8" },
   "/client/effects.js": { file: "client/effects.js", type: "text/javascript; charset=utf-8" },
   "/client/hud.js": { file: "client/hud.js", type: "text/javascript; charset=utf-8" },
+  "/client/audio.js": { file: "client/audio.js", type: "text/javascript; charset=utf-8" },
   "/vendor/three.module.js": { file: "node_modules/three/build/three.module.js", type: "text/javascript; charset=utf-8" },
   "/vendor/CSS2DRenderer.js": { file: "node_modules/three/examples/jsm/renderers/CSS2DRenderer.js", type: "text/javascript; charset=utf-8" },
   "/vendor/RoomEnvironment.js": { file: "node_modules/three/examples/jsm/environments/RoomEnvironment.js", type: "text/javascript; charset=utf-8" },
