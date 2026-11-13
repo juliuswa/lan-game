@@ -16,10 +16,83 @@
     hardHitThreshold: 0.5,
   };
 
-  let currentWalls = [];
+  const signedArea = (boundary) =>
+    boundary.reduce((sum, [ax, ay], i) => {
+      const [bx, by] = boundary[(i + 1) % boundary.length];
+      return sum + ax * by - bx * ay;
+    }, 0) / 2;
 
-  const setWalls = (walls) => {
-    currentWalls = walls;
+  const edgesOf = (boundary) => {
+    const winding = Math.sign(signedArea(boundary)) || 1;
+    return boundary.map(([ax, ay], i) => {
+      const [bx, by] = boundary[(i + 1) % boundary.length];
+      const length = Math.hypot(bx - ax, by - ay) || 1;
+      return { ax, ay, bx, by, inwardX: (-(by - ay) / length) * winding, inwardY: ((bx - ax) / length) * winding };
+    });
+  };
+
+  const RECTANGLE = [[0, 0], [CONFIG.width, 0], [CONFIG.width, CONFIG.height], [0, CONFIG.height]];
+
+  let currentArena = { boundary: RECTANGLE, walls: [], edges: edgesOf(RECTANGLE) };
+
+  const setArena = ({ boundary, walls }) => {
+    if (currentArena.boundary !== boundary) currentArena = { boundary, walls, edges: edgesOf(boundary) };
+    else currentArena.walls = walls;
+  };
+
+  const pointInPolygon = (point, boundary = currentArena.boundary) => {
+    let inside = false;
+    for (let i = 0, j = boundary.length - 1; i < boundary.length; j = i++) {
+      const [xi, yi] = boundary[i];
+      const [xj, yj] = boundary[j];
+      if (yi > point.y !== yj > point.y && point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+
+  const closestPointOnEdge = (point, edge) => {
+    const ex = edge.bx - edge.ax;
+    const ey = edge.by - edge.ay;
+    const t = Math.max(0, Math.min(1, ((point.x - edge.ax) * ex + (point.y - edge.ay) * ey) / (ex * ex + ey * ey || 1)));
+    return { x: edge.ax + ex * t, y: edge.ay + ey * t };
+  };
+
+  const distanceToBoundary = (point) =>
+    Math.min(...currentArena.edges.map((edge) => {
+      const closest = closestPointOnEdge(point, edge);
+      return Math.hypot(point.x - closest.x, point.y - closest.y);
+    }));
+
+  const pullInside = (position, radius) => {
+    let best = null;
+    for (const edge of currentArena.edges) {
+      const closest = closestPointOnEdge(position, edge);
+      const distance = Math.hypot(position.x - closest.x, position.y - closest.y);
+      if (!best || distance < best.distance) best = { distance, closest, edge };
+    }
+    position.x = best.closest.x + best.edge.inwardX * radius;
+    position.y = best.closest.y + best.edge.inwardY * radius;
+    return { x: best.edge.inwardX, y: best.edge.inwardY };
+  };
+
+  const resolveBoundary = (position, radius) => {
+    if (!pointInPolygon(position)) return pullInside(position, radius);
+    let normalX = 0;
+    let normalY = 0;
+    for (const edge of currentArena.edges) {
+      const closest = closestPointOnEdge(position, edge);
+      const dx = position.x - closest.x;
+      const dy = position.y - closest.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance >= radius) continue;
+      const nx = distance ? dx / distance : edge.inwardX;
+      const ny = distance ? dy / distance : edge.inwardY;
+      position.x = closest.x + nx * radius;
+      position.y = closest.y + ny * radius;
+      normalX += nx;
+      normalY += ny;
+    }
+    return normalX || normalY ? { x: normalX, y: normalY } : null;
   };
 
   const POWER_UPS = [
@@ -63,15 +136,10 @@
     return normal;
   };
 
-  const resolveWalls = (position, radius, walls = currentWalls) => {
-    let normalX = 0;
-    let normalY = 0;
-    if (position.x < radius) normalX += 1;
-    if (position.x > CONFIG.width - radius) normalX -= 1;
-    if (position.y < radius) normalY += 1;
-    if (position.y > CONFIG.height - radius) normalY -= 1;
-    position.x = clamp(position.x, radius, CONFIG.width - radius);
-    position.y = clamp(position.y, radius, CONFIG.height - radius);
+  const resolveWalls = (position, radius, walls = currentArena.walls) => {
+    const boundaryNormal = resolveBoundary(position, radius);
+    let normalX = boundaryNormal ? boundaryNormal.x : 0;
+    let normalY = boundaryNormal ? boundaryNormal.y : 0;
     for (const wall of walls) {
       const normal = pushOutOfRect(position, radius, wall);
       if (!normal) continue;
@@ -82,7 +150,7 @@
     return length ? { x: normalX / length, y: normalY / length } : null;
   };
 
-  const moveCircle = (position, dx, dy, radius, walls = currentWalls) => {
+  const moveCircle = (position, dx, dy, radius, walls = currentArena.walls) => {
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (radius / 2)));
     let hitNormal = null;
     for (let i = 0; i < steps; i++) {
@@ -128,7 +196,9 @@
   };
 
   exports.CONFIG = CONFIG;
-  exports.setWalls = setWalls;
+  exports.setArena = setArena;
+  exports.pointInPolygon = pointInPolygon;
+  exports.distanceToBoundary = distanceToBoundary;
   exports.POWER_UPS = POWER_UPS;
   exports.statsFor = statsFor;
   exports.moveCircle = moveCircle;
