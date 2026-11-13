@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim (A/D rotate the arrow, you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim (A/D rotate the arrow, you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -69,6 +69,11 @@ const handlePickKey = (event) => {
 };
 
 const setKey = (event, pressed) => {
+  if (pressed && event.key.toLowerCase() === "ä" && playerId) {
+    event.preventDefault();
+    if (!event.repeat) socket.send(JSON.stringify({ type: "bonusCoins" }));
+    return;
+  }
   if (pressed && isPicking()) {
     handlePickKey(event);
     return;
@@ -155,6 +160,26 @@ const drawAimArrow = (x, y, radius, angle, color) => {
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();
+  ctx.restore();
+};
+
+const drawBlackHole = (hole, now) => {
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, hole.lifeLeft * 5);
+  const glow = ctx.createRadialGradient(hole.x, hole.y, hole.radius * 0.3, hole.x, hole.y, hole.radius * 1.6);
+  glow.addColorStop(0, "#000");
+  glow.addColorStop(0.6, "rgba(120,40,200,0.6)");
+  glow.addColorStop(1, "rgba(120,40,200,0)");
+  drawCircle(hole.x, hole.y, hole.radius * 1.6, glow);
+  drawCircle(hole.x, hole.y, hole.radius * 0.8, "#000");
+  const spin = now / 300;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#b47cff";
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(hole.x, hole.y, hole.radius * (0.9 + i * 0.15), spin + (i * Math.PI * 2) / 3, spin + (i * Math.PI * 2) / 3 + Math.PI / 2);
+    ctx.stroke();
+  }
   ctx.restore();
 };
 
@@ -249,6 +274,7 @@ const drawMatchOver = () => {
 const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawArena();
+  for (const hole of latestState.blackHoles) drawBlackHole(hole, now);
   if (latestState.spawner) {
     const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
     drawSpawner(spawnerPosition.x, spawnerPosition.y);

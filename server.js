@@ -21,6 +21,12 @@ const SPAWNER_PUSH_FRICTION = 0.92;
 const SPAWNER_DASH_PUSH = 12;
 const SPAWNER_BREAK_SPEED = 6;
 const SPAWNER_RESPAWN_MS = 3000;
+const BLACK_HOLE_RADIUS = 22;
+const MAX_BLACK_HOLES = 2;
+const BLACK_HOLE_LIFETIME_MS = 8000;
+const BLACK_HOLE_SPAWN_MIN_MS = 3000;
+const BLACK_HOLE_SPAWN_MAX_MS = 7000;
+const BONUS_COINS = 5;
 const COIN_SCATTER_DISTANCE = 90;
 const ARENA_BORDER_ONLY = [];
 const WALL_HIT_COIN_LOSS = 3;
@@ -46,6 +52,8 @@ let coins = [];
 let arena = null;
 let spawner = null;
 let spawnerRespawnAt = 0;
+let blackHoles = [];
+let nextBlackHoleAt = 0;
 let phase = "playing";
 let roundWinner = null;
 let matchWinner = null;
@@ -121,7 +129,8 @@ const generateWalls = () => {
 const isOpenSpot = (position, radius) =>
   pointInPolygon(position) &&
   distanceToBoundary(position) >= radius &&
-  arena.walls.every((wall) => Math.hypot(Math.max(wall.x - position.x, 0, position.x - wall.x - wall.w), Math.max(wall.y - position.y, 0, position.y - wall.y - wall.h)) >= radius);
+  arena.walls.every((wall) => Math.hypot(Math.max(wall.x - position.x, 0, position.x - wall.x - wall.w), Math.max(wall.y - position.y, 0, position.y - wall.y - wall.h)) >= radius) &&
+  blackHoles.every((hole) => Math.hypot(hole.x - position.x, hole.y - position.y) >= radius + BLACK_HOLE_RADIUS);
 
 const randomPosition = (radius) => {
   let position = null;
@@ -260,7 +269,26 @@ const placeForNewRound = (player) => {
   Object.assign(player, randomPosition(player.radius));
 };
 
+const scheduleNextBlackHole = () => {
+  nextBlackHoleAt = Date.now() + randomBetween(BLACK_HOLE_SPAWN_MIN_MS, BLACK_HOLE_SPAWN_MAX_MS);
+};
+
+const updateBlackHoles = () => {
+  const now = Date.now();
+  blackHoles = blackHoles.filter((hole) => hole.expiresAt > now);
+  if (now < nextBlackHoleAt) return;
+  if (blackHoles.length < MAX_BLACK_HOLES) blackHoles.push({ ...randomPosition(BLACK_HOLE_RADIUS), expiresAt: now + BLACK_HOLE_LIFETIME_MS });
+  scheduleNextBlackHole();
+};
+
+const fallIntoBlackHoles = (player) => {
+  if (!blackHoles.some((hole) => Math.hypot(hole.x - player.x, hole.y - player.y) < BLACK_HOLE_RADIUS)) return;
+  Object.assign(player, randomPosition(player.radius), { dashTicks: 0, aiming: false, knockX: 0, knockY: 0 });
+};
+
 const startRound = () => {
+  blackHoles = [];
+  scheduleNextBlackHole();
   arena = generateArena();
   spawner = createSpawner();
   coins = Array.from({ length: CONFIG.coinCount }, spawnCoin);
@@ -317,14 +345,20 @@ const updatePhase = () => {
   }
 };
 
+const awardCoins = (player, count) => {
+  player.score += count;
+  player.dashCharge = Math.min(player.dashCharge + count, CONFIG.dashCoinCost);
+  if (player.score >= CONFIG.winScore && phase === "playing") endRound(player);
+};
+
 const collectCoins = (player) => {
+  let collected = 0;
   coins = coins.flatMap((coin) => {
     if (Math.hypot(coin.x - player.x, coin.y - player.y) > player.radius + CONFIG.coinRadius) return [coin];
-    player.score += 1;
-    player.dashCharge = Math.min(player.dashCharge + 1, CONFIG.dashCoinCost);
+    collected += 1;
     return spawner ? [spawnCoin()] : [];
   });
-  if (player.score >= CONFIG.winScore && phase === "playing") endRound(player);
+  if (collected) awardCoins(player, collected);
 };
 
 const processInputs = (player) => {
@@ -391,6 +425,12 @@ const broadcast = () => {
     matchWinner,
     pickSecondsLeft: phase === "intermission" ? Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000)) : 0,
     arena,
+    blackHoles: blackHoles.map((hole) => ({
+      x: hole.x,
+      y: hole.y,
+      radius: BLACK_HOLE_RADIUS,
+      lifeLeft: Math.max(0, (hole.expiresAt - Date.now()) / BLACK_HOLE_LIFETIME_MS),
+    })),
     spawner: spawner && { x: spawner.x, y: spawner.y },
     coins,
     players: [...players.values()].map((player) => ({
@@ -432,6 +472,10 @@ const tick = () => {
   respawnSpawnerWhenDue();
   moveSpawner();
   if (spawner) for (const player of players.values()) pushSpawner(player);
+  if (phase === "playing") {
+    updateBlackHoles();
+    for (const player of players.values()) fallIntoBlackHoles(player);
+  }
   broadcast();
 };
 
@@ -488,6 +532,8 @@ new WebSocketServer({ server }).on("connection", (socket) => {
       if (player.pendingInputs.length < MAX_QUEUED_INPUTS) {
         player.pendingInputs.push({ seq: message.seq, keys: sanitizeKeys(message.keys) });
       }
+    } else if (message.type === "bonusCoins" && player && phase === "playing") {
+      awardCoins(player, BONUS_COINS);
     } else if (message.type === "pick" && player && phase === "intermission" && player.pendingPick) {
       if (POWER_UPS.some(({ key }) => key === message.powerUp)) grantPowerUp(player, message.powerUp);
     }
