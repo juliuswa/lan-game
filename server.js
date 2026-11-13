@@ -23,7 +23,7 @@ const SPAWNER_BREAK_SPEED = 2.5;
 const SPAWNER_RESPAWN_MS = 3000;
 const BLACK_HOLE_RADIUS = 22;
 const DRAINING_HOLE_CHANCE = 0.4;
-const DRAINING_HOLE_COIN_LOSS = 3;
+const DRAINING_HOLE_COIN_LOSS = 5;
 const MAX_BLACK_HOLES = 2;
 const BLACK_HOLE_LIFETIME_MS = 8000;
 const BLACK_HOLE_SPAWN_MIN_MS = 3000;
@@ -42,7 +42,7 @@ const LOCK_KEYS = ["w", "a", "s", "d"];
 const LOCK_LENGTH = 3;
 const COIN_SCATTER_DISTANCE = 90;
 const ARENA_BORDER_ONLY = [];
-const WALL_HIT_COIN_LOSS = 3;
+const WALL_HIT_COIN_LOSS = 5;
 const WALL_COUNT = 7;
 const WALL_THICKNESS = 24;
 const WALL_MIN_LENGTH = 70;
@@ -73,6 +73,7 @@ let coins = [];
 let arena = null;
 let spawner = null;
 let spawnerRespawnAt = 0;
+let nextCoinDropAt = 0;
 let blackHoles = [];
 let nextBlackHoleAt = 0;
 let traps = [];
@@ -220,7 +221,19 @@ const respawnSpawnerWhenDue = () => {
   if (spawner || Date.now() < spawnerRespawnAt) return;
   spawner = createSpawner();
   emit("spawnerSpawn", { x: spawner.x, y: spawner.y });
-  while (coins.length < CONFIG.coinCount) coins.push(spawnCoin());
+};
+
+const dropCoinsWhenDue = () => {
+  const now = Date.now();
+  if (!spawner) {
+    nextCoinDropAt = Math.max(nextCoinDropAt, now);
+    return;
+  }
+  const interval = 1000 / CONFIG.coinsPerSecond;
+  while (now >= nextCoinDropAt) {
+    if (coins.length < CONFIG.maxCoinsOnMap) coins.push(spawnCoin());
+    nextCoinDropAt += interval;
+  }
 };
 
 const slammedIntoBorder = (normal) => {
@@ -464,6 +477,7 @@ const beginPlay = () => {
   scheduleNextChaos();
   scheduleNextTrap();
   scheduleNextBlackHole();
+  nextCoinDropAt = Date.now() + 1000 / CONFIG.coinsPerSecond;
   phase = "playing";
   emit("roundStart", {});
 };
@@ -532,7 +546,7 @@ const collectCoins = (player) => {
     if (Math.hypot(coin.x - player.x, coin.y - player.y) > player.radius + CONFIG.coinRadius) return [coin];
     collected += 1;
     emit("coin", { x: coin.x, y: coin.y, playerX: player.x, playerY: player.y, playerId: player.id });
-    return spawner ? [spawnCoin()] : [];
+    return [];
   });
   if (collected) awardCoins(player, collected);
 };
@@ -670,6 +684,7 @@ const tick = () => {
   if (spawner) for (const player of players.values()) pushSpawner(player);
   if (phase === "playing") {
     updateBlackHoles();
+    dropCoinsWhenDue();
     dropTrapWhenDue();
     updateChaosPickups();
     for (const player of players.values()) {

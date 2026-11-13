@@ -3,7 +3,7 @@ const MUTE_STORAGE_KEY = "coin-rush-muted";
 const LOOKAHEAD_SECONDS = 0.12;
 const SCHEDULER_INTERVAL_MS = 25;
 const STEPS_PER_BAR = 16;
-const TENSION_SCORE = CONFIG.winScore - 5;
+const TENSION_SCORE = Math.round(CONFIG.winScore * 0.75);
 
 const midiToFrequency = (midi) => 440 * Math.pow(2, (midi - 69) / 12);
 
