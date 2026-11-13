@@ -28,69 +28,72 @@
   <canvas id="canvas" width="800" height="600"></canvas>
   <div id="board"><h3>Scores</h3><ul id="scores"></ul></div>
 </div>
+<script src="/shared.js"></script>
 <script>
+const { CONFIG, applyInput } = window.Shared;
+const INTERPOLATION_DELAY_MS = 50;
+const SNAPSHOT_HISTORY_MS = 1000;
+const STEP_MS = CONFIG.stepSeconds * 1000;
+
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const scoresList = document.getElementById("scores");
 const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
-const input = { up: false, down: false, left: false, right: false };
+const keys = { up: false, down: false, left: false, right: false };
+
+let socket = null;
 let playerId = null;
 let latestState = null;
 let predicted = null;
+let pendingInputs = [];
+let nextSeq = 1;
+let snapshots = [];
+let lastScoresKey = "";
+let accumulator = 0;
 let lastFrameTime = performance.now();
-const displayed = new Map();
-const SNAP_DISTANCE = 120;
 
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const isMoving = () => input.up || input.down || input.left || input.right;
-
-const advancePrediction = (dt) => {
-  const me = latestState.players.find((player) => player.id === playerId);
-  if (!me || latestState.winner) {
-    predicted = null;
-    return;
-  }
-  if (!predicted) predicted = { x: me.x, y: me.y };
-  const dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-  const dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
-  const length = Math.hypot(dx, dy) || 1;
-  const { speed, playerRadius, width, height } = latestState;
-  predicted.x = clamp(predicted.x + (dx / length) * speed * dt, playerRadius, width - playerRadius);
-  predicted.y = clamp(predicted.y + (dy / length) * speed * dt, playerRadius, height - playerRadius);
-  const error = Math.hypot(me.x - predicted.x, me.y - predicted.y);
-  if (error > SNAP_DISTANCE) {
-    predicted = { x: me.x, y: me.y };
-  } else if (!isMoving()) {
-    const pull = 1 - Math.exp(-dt * 8);
-    predicted.x += (me.x - predicted.x) * pull;
-    predicted.y += (me.y - predicted.y) * pull;
-  }
-};
-
-const smoothedPosition = (player, dt) => {
-  const previous = displayed.get(player.id);
-  const pull = 1 - Math.exp(-dt * 15);
-  const next = previous && Math.hypot(player.x - previous.x, player.y - previous.y) < SNAP_DISTANCE
-    ? { x: previous.x + (player.x - previous.x) * pull, y: previous.y + (player.y - previous.y) * pull }
-    : { x: player.x, y: player.y };
-  displayed.set(player.id, next);
-  return next;
-};
-
-const postJson = (url, body) =>
-  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+const isMoving = () => keys.up || keys.down || keys.left || keys.right;
 
 const setKey = (event, pressed) => {
   const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
   if (!direction || !playerId) return;
   event.preventDefault();
-  if (input[direction] === pressed) return;
-  input[direction] = pressed;
-  postJson("/input", { id: playerId, input });
+  keys[direction] = pressed;
 };
 
 addEventListener("keydown", (e) => setKey(e, true));
 addEventListener("keyup", (e) => setKey(e, false));
+addEventListener("blur", () => Object.keys(keys).forEach((key) => (keys[key] = false)));
+
+const reconcile = (state) => {
+  const me = state.players.find((player) => player.id === playerId);
+  if (!me) return;
+  pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
+  predicted = { x: me.x, y: me.y };
+  if (!state.winner) for (const input of pendingInputs) applyInput(predicted, input.keys);
+};
+
+const simulateStep = () => {
+  if (!predicted || latestState.winner || !isMoving()) return;
+  const input = { seq: nextSeq++, keys: { ...keys } };
+  pendingInputs.push(input);
+  applyInput(predicted, input.keys);
+  socket.send(JSON.stringify({ type: "input", ...input }));
+};
+
+const interpolatedPosition = (id, renderTime) => {
+  for (let i = snapshots.length - 1; i > 0; i--) {
+    const older = snapshots[i - 1];
+    if (older.time > renderTime) continue;
+    const newer = snapshots[i];
+    const from = older.players.get(id);
+    const to = newer.players.get(id);
+    if (!from || !to) return to || from;
+    const t = Math.min((renderTime - older.time) / (newer.time - older.time || 1), 1);
+    return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+  }
+  return snapshots[0] && snapshots[0].players.get(id);
+};
 
 const drawCircle = (x, y, radius, color) => {
   ctx.beginPath();
@@ -99,13 +102,14 @@ const drawCircle = (x, y, radius, color) => {
   ctx.fill();
 };
 
-const render = (state, dt) => {
+const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  for (const coin of state.coins) drawCircle(coin.x, coin.y, state.coinRadius, "gold");
-  for (const player of state.players) {
-    const { x, y } = player.id === playerId && predicted ? predicted : smoothedPosition(player, dt);
-    drawCircle(x, y, state.playerRadius, player.color);
-    if (player.id === playerId) {
+  for (const coin of latestState.coins) drawCircle(coin.x, coin.y, CONFIG.coinRadius, "gold");
+  for (const player of latestState.players) {
+    const isMe = player.id === playerId;
+    const { x, y } = (isMe ? predicted : interpolatedPosition(player.id, now - INTERPOLATION_DELAY_MS)) || player;
+    drawCircle(x, y, CONFIG.playerRadius, player.color);
+    if (isMe) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = "white";
       ctx.stroke();
@@ -113,49 +117,68 @@ const render = (state, dt) => {
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(player.name, x, y - state.playerRadius - 6);
+    ctx.fillText(player.name, x, y - CONFIG.playerRadius - 6);
   }
-  if (state.winner) {
+  if (latestState.winner) {
     ctx.fillStyle = "rgba(0,0,0,0.6)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "white";
     ctx.font = "bold 48px system-ui";
-    ctx.fillText(`${state.winner} wins!`, canvas.width / 2, canvas.height / 2);
+    ctx.fillText(`${latestState.winner} wins!`, canvas.width / 2, canvas.height / 2);
   }
 };
 
 const renderScores = (state) => {
+  const ranked = [...state.players].sort((a, b) => b.score - a.score);
+  const scoresKey = ranked.map((player) => `${player.id}:${player.score}`).join(",");
+  if (scoresKey === lastScoresKey) return;
+  lastScoresKey = scoresKey;
   scoresList.innerHTML = "";
-  for (const player of [...state.players].sort((a, b) => b.score - a.score)) {
+  for (const player of ranked) {
     const item = document.createElement("li");
-    item.textContent = `${player.name}: ${player.score} / ${state.winScore}`;
+    item.textContent = `${player.name}: ${player.score} / ${CONFIG.winScore}`;
     item.style.color = player.color;
     scoresList.appendChild(item);
   }
 };
 
-document.getElementById("join").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const { id } = await postJson("/join", { name: document.getElementById("name").value });
-  playerId = id;
-  document.getElementById("join").style.display = "none";
-  document.getElementById("game").style.display = "flex";
-  const events = new EventSource(`/events?id=${id}`);
-  events.onmessage = (message) => {
-    latestState = JSON.parse(message.data);
-    renderScores(latestState);
-  };
-  const frame = (now) => {
-    const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
-    lastFrameTime = now;
-    if (latestState) {
-      advancePrediction(dt);
-      render(latestState, dt);
-    }
-    requestAnimationFrame(frame);
-  };
+const receiveState = (state) => {
+  const now = performance.now();
+  latestState = state;
+  snapshots.push({ time: now, players: new Map(state.players.map((player) => [player.id, player])) });
+  snapshots = snapshots.filter((snapshot) => now - snapshot.time < SNAPSHOT_HISTORY_MS);
+  reconcile(state);
+  renderScores(state);
+};
+
+const frame = (now) => {
+  accumulator += Math.min(now - lastFrameTime, 250);
+  lastFrameTime = now;
+  while (accumulator >= STEP_MS) {
+    if (latestState) simulateStep();
+    accumulator -= STEP_MS;
+  }
+  if (latestState) render(now);
   requestAnimationFrame(frame);
-  events.onerror = () => { events.close(); alert("Disconnected from server. Reload to rejoin."); };
+};
+
+document.getElementById("join").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = document.getElementById("name").value;
+  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`);
+  socket.onopen = () => socket.send(JSON.stringify({ type: "join", name }));
+  socket.onmessage = (message) => {
+    const data = JSON.parse(message.data);
+    if (data.type === "welcome") {
+      playerId = data.id;
+      document.getElementById("join").style.display = "none";
+      document.getElementById("game").style.display = "flex";
+      requestAnimationFrame(frame);
+    } else if (data.type === "state") {
+      receiveState(data);
+    }
+  };
+  socket.onclose = () => alert("Disconnected from server. Reload to rejoin.");
 });
 </script>
 </body>

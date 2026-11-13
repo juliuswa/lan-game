@@ -2,151 +2,135 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { WebSocketServer, WebSocket } = require("ws");
+const { CONFIG, applyInput } = require("./shared");
 
 const PORT = 3000;
-const WIDTH = 800;
-const HEIGHT = 600;
-const PLAYER_RADIUS = 16;
-const COIN_RADIUS = 8;
-const SPEED = 220;
-const TICK_MS = 1000 / 30;
-const COIN_COUNT = 5;
-const WIN_SCORE = 20;
+const TICK_MS = 1000 / 60;
+const MAX_INPUTS_PER_TICK = 8;
+const MAX_QUEUED_INPUTS = 120;
+const ROUND_RESTART_MS = 4000;
 const COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe"];
+const STATIC_FILES = {
+  "/": { file: "index.html", type: "text/html; charset=utf-8" },
+  "/shared.js": { file: "shared.js", type: "text/javascript; charset=utf-8" },
+};
 
 const players = new Map();
-const streams = new Map();
 let coins = [];
 let winner = null;
 let nextId = 1;
 
 const randomPosition = (margin) => ({
-  x: margin + Math.random() * (WIDTH - 2 * margin),
-  y: margin + Math.random() * (HEIGHT - 2 * margin),
+  x: margin + Math.random() * (CONFIG.width - 2 * margin),
+  y: margin + Math.random() * (CONFIG.height - 2 * margin),
 });
 
-const spawnCoin = () => randomPosition(COIN_RADIUS * 2);
+const spawnCoin = () => randomPosition(CONFIG.coinRadius * 2);
 
 const resetRound = () => {
-  coins = Array.from({ length: COIN_COUNT }, spawnCoin);
+  coins = Array.from({ length: CONFIG.coinCount }, spawnCoin);
   for (const player of players.values()) {
-    Object.assign(player, randomPosition(PLAYER_RADIUS), { score: 0 });
+    Object.assign(player, randomPosition(CONFIG.playerRadius), { score: 0 });
   }
   winner = null;
 };
 
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
-const tick = () => {
-  const dt = TICK_MS / 1000;
-  if (!winner) {
-    for (const player of players.values()) {
-      const { up, down, left, right } = player.input;
-      let dx = (right ? 1 : 0) - (left ? 1 : 0);
-      let dy = (down ? 1 : 0) - (up ? 1 : 0);
-      const length = Math.hypot(dx, dy) || 1;
-      player.x = clamp(player.x + (dx / length) * SPEED * dt, PLAYER_RADIUS, WIDTH - PLAYER_RADIUS);
-      player.y = clamp(player.y + (dy / length) * SPEED * dt, PLAYER_RADIUS, HEIGHT - PLAYER_RADIUS);
-
-      coins = coins.map((coin) => {
-        if (Math.hypot(coin.x - player.x, coin.y - player.y) > PLAYER_RADIUS + COIN_RADIUS) return coin;
-        player.score += 1;
-        return spawnCoin();
-      });
-
-      if (player.score >= WIN_SCORE && !winner) {
-        winner = player.name;
-        setTimeout(resetRound, 4000);
-      }
-    }
+const collectCoins = (player) => {
+  coins = coins.map((coin) => {
+    if (Math.hypot(coin.x - player.x, coin.y - player.y) > CONFIG.playerRadius + CONFIG.coinRadius) return coin;
+    player.score += 1;
+    return spawnCoin();
+  });
+  if (player.score >= CONFIG.winScore && !winner) {
+    winner = player.name;
+    setTimeout(resetRound, ROUND_RESTART_MS);
   }
-  broadcast();
+};
+
+const processInputs = (player) => {
+  for (const { seq, keys } of player.pendingInputs.splice(0, MAX_INPUTS_PER_TICK)) {
+    player.ack = seq;
+    if (winner) continue;
+    applyInput(player, keys);
+    collectCoins(player);
+  }
 };
 
 const broadcast = () => {
-  const state = JSON.stringify({
-    width: WIDTH,
-    height: HEIGHT,
-    playerRadius: PLAYER_RADIUS,
-    coinRadius: COIN_RADIUS,
-    speed: SPEED,
-    winScore: WIN_SCORE,
+  const message = JSON.stringify({
+    type: "state",
     winner,
     coins,
-    players: [...players.values()].map(({ id, name, color, x, y, score }) => ({ id, name, color, x, y, score })),
+    players: [...players.values()].map(({ id, name, color, x, y, score, ack }) => ({ id, name, color, x, y, score, ack })),
   });
-  for (const res of streams.values()) res.write(`data: ${state}\n\n`);
+  for (const player of players.values()) {
+    if (player.socket.readyState === WebSocket.OPEN) player.socket.send(message);
+  }
 };
 
-const readBody = (req) =>
-  new Promise((resolve) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(data || "{}"));
-      } catch {
-        resolve({});
-      }
-    });
-  });
-
-const sendJson = (res, body) => {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(body));
+const tick = () => {
+  for (const player of players.values()) processInputs(player);
+  broadcast();
 };
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, "http://localhost");
+const createPlayer = (name, socket) => {
+  const id = String(nextId++);
+  const player = {
+    id,
+    name: String(name || `Player ${id}`).slice(0, 16),
+    color: COLORS[(Number(id) - 1) % COLORS.length],
+    score: 0,
+    ack: 0,
+    pendingInputs: [],
+    socket,
+    ...randomPosition(CONFIG.playerRadius),
+  };
+  players.set(id, player);
+  return player;
+};
 
-  if (req.method === "GET" && url.pathname === "/") {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    fs.createReadStream(path.join(__dirname, "index.html")).pipe(res);
+const sanitizeKeys = (keys = {}) => ({
+  up: Boolean(keys.up),
+  down: Boolean(keys.down),
+  left: Boolean(keys.left),
+  right: Boolean(keys.right),
+});
+
+const server = http.createServer((req, res) => {
+  const staticFile = STATIC_FILES[new URL(req.url, "http://localhost").pathname];
+  if (!staticFile) {
+    res.writeHead(404);
+    res.end();
     return;
   }
+  res.writeHead(200, { "Content-Type": staticFile.type, "Cache-Control": "no-cache" });
+  fs.createReadStream(path.join(__dirname, staticFile.file)).pipe(res);
+});
 
-  if (req.method === "POST" && url.pathname === "/join") {
-    const { name } = await readBody(req);
-    const id = String(nextId++);
-    players.set(id, {
-      id,
-      name: String(name || `Player ${id}`).slice(0, 16),
-      color: COLORS[(Number(id) - 1) % COLORS.length],
-      score: 0,
-      input: {},
-      ...randomPosition(PLAYER_RADIUS),
-    });
-    sendJson(res, { id });
-    return;
-  }
+new WebSocketServer({ server }).on("connection", (socket) => {
+  let player = null;
 
-  if (req.method === "POST" && url.pathname === "/input") {
-    const { id, input } = await readBody(req);
-    const player = players.get(id);
-    if (player && input) player.input = input;
-    sendJson(res, { ok: Boolean(player) });
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/events") {
-    const id = url.searchParams.get("id");
-    if (!players.has(id)) {
-      res.writeHead(404);
-      res.end();
+  socket.on("message", (data) => {
+    let message;
+    try {
+      message = JSON.parse(data);
+    } catch {
       return;
     }
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-    res.socket.setNoDelay(true);
-    streams.set(id, res);
-    req.on("close", () => {
-      streams.delete(id);
-      players.delete(id);
-    });
-    return;
-  }
+    if (message.type === "join" && !player) {
+      player = createPlayer(message.name, socket);
+      socket.send(JSON.stringify({ type: "welcome", id: player.id }));
+    } else if (message.type === "input" && player && Number.isInteger(message.seq) && message.seq > player.ack) {
+      if (player.pendingInputs.length < MAX_QUEUED_INPUTS) {
+        player.pendingInputs.push({ seq: message.seq, keys: sanitizeKeys(message.keys) });
+      }
+    }
+  });
 
-  res.writeHead(404);
-  res.end();
+  socket.on("close", () => {
+    if (player) players.delete(player.id);
+  });
 });
 
 resetRound();
