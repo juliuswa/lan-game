@@ -30,7 +30,7 @@
 </div>
 <script src="/shared.js"></script>
 <script>
-const { CONFIG, POWER_UPS, applyInput } = window.Shared;
+const { CONFIG, POWER_UPS, applyInput, setWalls } = window.Shared;
 const INTERPOLATION_DELAY_MS = 50;
 const SNAPSHOT_HISTORY_MS = 1000;
 const STEP_MS = CONFIG.stepSeconds * 1000;
@@ -156,7 +156,7 @@ const drawSpawner = (x, y) => {
 
 const drawWalls = () => {
   ctx.fillStyle = "#555";
-  for (const wall of CONFIG.walls) ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+  for (const wall of latestState.walls) ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
 };
 
 const drawOverlayTitle = (text, y) => {
@@ -276,6 +276,7 @@ const renderScores = (state) => {
 const receiveState = (state) => {
   const now = performance.now();
   latestState = state;
+  setWalls(state.walls);
   snapshots.push({ time: now, spawner: state.spawner, players: new Map(state.players.map((player) => [player.id, player])) });
   snapshots = snapshots.filter((snapshot) => now - snapshot.time < SNAPSHOT_HISTORY_MS);
   reconcile(state);

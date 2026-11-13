@@ -14,15 +14,12 @@
     dashDiameters: 3,
     dashCoinCost: 5,
     hardHitThreshold: 0.5,
-    walls: [
-      { x: 150, y: 120, w: 140, h: 24 },
-      { x: 510, y: 120, w: 140, h: 24 },
-      { x: 150, y: 456, w: 140, h: 24 },
-      { x: 510, y: 456, w: 140, h: 24 },
-      { x: 388, y: 250, w: 24, h: 100 },
-      { x: 70, y: 260, w: 24, h: 80 },
-      { x: 706, y: 260, w: 24, h: 80 },
-    ],
+  };
+
+  let currentWalls = [];
+
+  const setWalls = (walls) => {
+    currentWalls = walls;
   };
 
   const POWER_UPS = [
@@ -66,7 +63,7 @@
     return normal;
   };
 
-  const resolveWalls = (position, radius) => {
+  const resolveWalls = (position, radius, walls = currentWalls) => {
     let normalX = 0;
     let normalY = 0;
     if (position.x < radius) normalX += 1;
@@ -75,7 +72,7 @@
     if (position.y > CONFIG.height - radius) normalY -= 1;
     position.x = clamp(position.x, radius, CONFIG.width - radius);
     position.y = clamp(position.y, radius, CONFIG.height - radius);
-    for (const wall of CONFIG.walls) {
+    for (const wall of walls) {
       const normal = pushOutOfRect(position, radius, wall);
       if (!normal) continue;
       normalX += normal.x;
@@ -85,13 +82,13 @@
     return length ? { x: normalX / length, y: normalY / length } : null;
   };
 
-  const moveCircle = (position, dx, dy, radius) => {
+  const moveCircle = (position, dx, dy, radius, walls = currentWalls) => {
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (radius / 2)));
     let hitNormal = null;
     for (let i = 0; i < steps; i++) {
       position.x += dx / steps;
       position.y += dy / steps;
-      hitNormal = resolveWalls(position, radius) || hitNormal;
+      hitNormal = resolveWalls(position, radius, walls) || hitNormal;
     }
     return hitNormal;
   };
@@ -131,6 +128,7 @@
   };
 
   exports.CONFIG = CONFIG;
+  exports.setWalls = setWalls;
   exports.POWER_UPS = POWER_UPS;
   exports.statsFor = statsFor;
   exports.moveCircle = moveCircle;

@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { WebSocketServer, WebSocket } = require("ws");
-const { CONFIG, POWER_UPS, statsFor, applyInput, moveBy, moveCircle, resolveWalls, isHardHit } = require("./shared");
+const { CONFIG, POWER_UPS, statsFor, applyInput, moveBy, moveCircle, resolveWalls, isHardHit, setWalls } = require("./shared");
 
 const PORT = 3000;
 const TICK_MS = 1000 / 60;
@@ -20,7 +20,15 @@ const SPAWNER_TURN_RATE = 0.2;
 const SPAWNER_PUSH_FRICTION = 0.92;
 const SPAWNER_DASH_PUSH = 12;
 const COIN_SCATTER_DISTANCE = 90;
-const WALL_HIT_COIN_LOSS = 1;
+const ARENA_BORDER_ONLY = [];
+const WALL_HIT_COIN_LOSS = 3;
+const WALL_COUNT = 7;
+const WALL_THICKNESS = 24;
+const WALL_MIN_LENGTH = 70;
+const WALL_MAX_LENGTH = 170;
+const WALL_EDGE_MARGIN = 60;
+const WALL_MIN_GAP = 90;
+const WALL_PLACEMENT_ATTEMPTS = 200;
 const WALL_HIT_INVULNERABLE_MS = 1000;
 const COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe"];
 const STATIC_FILES = {
@@ -30,6 +38,7 @@ const STATIC_FILES = {
 
 const players = new Map();
 let coins = [];
+let walls = [];
 let spawner = null;
 let phase = "playing";
 let roundWinner = null;
@@ -37,6 +46,33 @@ let matchWinner = null;
 let phaseMinEndsAt = 0;
 let phaseEndsAt = 0;
 let nextId = 1;
+
+const randomBetween = (min, max) => min + Math.random() * (max - min);
+
+const randomWall = () => {
+  const length = randomBetween(WALL_MIN_LENGTH, WALL_MAX_LENGTH);
+  const horizontal = Math.random() < 0.5;
+  const w = horizontal ? length : WALL_THICKNESS;
+  const h = horizontal ? WALL_THICKNESS : length;
+  return {
+    x: Math.round(randomBetween(WALL_EDGE_MARGIN, CONFIG.width - WALL_EDGE_MARGIN - w)),
+    y: Math.round(randomBetween(WALL_EDGE_MARGIN, CONFIG.height - WALL_EDGE_MARGIN - h)),
+    w: Math.round(w),
+    h: Math.round(h),
+  };
+};
+
+const wallsTooClose = (a, b) =>
+  a.x < b.x + b.w + WALL_MIN_GAP && b.x < a.x + a.w + WALL_MIN_GAP && a.y < b.y + b.h + WALL_MIN_GAP && b.y < a.y + a.h + WALL_MIN_GAP;
+
+const generateWalls = () => {
+  const placed = [];
+  for (let attempt = 0; attempt < WALL_PLACEMENT_ATTEMPTS && placed.length < WALL_COUNT; attempt++) {
+    const candidate = randomWall();
+    if (!placed.some((wall) => wallsTooClose(wall, candidate))) placed.push(candidate);
+  }
+  return placed;
+};
 
 const randomPosition = (radius) => {
   const position = {
@@ -85,6 +121,7 @@ const moveSpawner = () => {
     Math.cos(spawner.heading) * SPAWNER_SPEED + spawner.pushX,
     Math.sin(spawner.heading) * SPAWNER_SPEED + spawner.pushY,
     CONFIG.spawnerRadius,
+    ARENA_BORDER_ONLY,
   );
   spawner.pushX *= SPAWNER_PUSH_FRICTION;
   spawner.pushY *= SPAWNER_PUSH_FRICTION;
@@ -104,7 +141,7 @@ const pushSpawner = (player) => {
   if (overlap <= 0) return;
   spawner.x += normalX * overlap;
   spawner.y += normalY * overlap;
-  resolveWalls(spawner, CONFIG.spawnerRadius);
+  resolveWalls(spawner, CONFIG.spawnerRadius, ARENA_BORDER_ONLY);
   if (player.dashTicks > 0) {
     player.dashTicks = 0;
     spawner.pushX = normalX * SPAWNER_DASH_PUSH * player.pushMultiplier;
@@ -141,6 +178,8 @@ const placeForNewRound = (player) => {
 };
 
 const startRound = () => {
+  walls = generateWalls();
+  setWalls(walls);
   spawner = createSpawner();
   coins = Array.from({ length: CONFIG.coinCount }, spawnCoin);
   for (const player of players.values()) placeForNewRound(player);
@@ -269,6 +308,7 @@ const broadcast = () => {
     roundWinner,
     matchWinner,
     pickSecondsLeft: phase === "intermission" ? Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000)) : 0,
+    walls,
     spawner: { x: spawner.x, y: spawner.y },
     coins,
     players: [...players.values()].map((player) => ({
