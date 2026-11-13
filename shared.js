@@ -8,9 +8,10 @@
     coinCount: 5,
     speed: 220,
     winScore: 20,
+    roundsToWin: 5,
     stepSeconds: 1 / 60,
     dashTicks: 8,
-    dashDistance: 16 * 2 * 3,
+    dashDiameters: 3,
     dashCoinCost: 5,
     hardHitThreshold: 0.5,
     walls: [
@@ -23,6 +24,18 @@
       { x: 706, y: 260, w: 24, h: 80 },
     ],
   };
+
+  const POWER_UPS = [
+    { key: "speed", label: "Speed", description: "+15% move speed" },
+    { key: "push", label: "Push force", description: "+35% knockback" },
+    { key: "size", label: "Size", description: "+4 radius" },
+  ];
+
+  const statsFor = (powerUps) => ({
+    radius: CONFIG.playerRadius + 4 * powerUps.size,
+    speed: CONFIG.speed * (1 + 0.15 * powerUps.speed),
+    pushMultiplier: 1 + 0.35 * powerUps.push,
+  });
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -72,11 +85,18 @@
     return length ? { x: normalX / length, y: normalY / length } : null;
   };
 
-  const moveBy = (position, dx, dy) => {
-    position.x += dx;
-    position.y += dy;
-    return resolveWalls(position, CONFIG.playerRadius);
+  const moveCircle = (position, dx, dy, radius) => {
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (radius / 2)));
+    let hitNormal = null;
+    for (let i = 0; i < steps; i++) {
+      position.x += dx / steps;
+      position.y += dy / steps;
+      hitNormal = resolveWalls(position, radius) || hitNormal;
+    }
+    return hitNormal;
   };
+
+  const moveBy = (player, dx, dy) => moveCircle(player, dx, dy, player.radius);
 
   const isHardHit = (normal, directionX, directionY) =>
     Boolean(normal) && normal.x * directionX + normal.y * directionY < -CONFIG.hardHitThreshold;
@@ -99,18 +119,21 @@
     }
     if (state.dashTicks > 0) {
       state.dashTicks -= 1;
-      const dashStep = CONFIG.dashDistance / CONFIG.dashTicks;
+      const dashStep = (state.radius * 2 * CONFIG.dashDiameters) / CONFIG.dashTicks;
       const wallNormal = moveBy(state, state.dashX * dashStep, state.dashY * dashStep);
       if (!isHardHit(wallNormal, state.dashX, state.dashY)) return false;
       state.dashTicks = 0;
       return true;
     }
-    const distance = CONFIG.speed * CONFIG.stepSeconds;
+    const distance = state.speed * CONFIG.stepSeconds;
     moveBy(state, (dx / length) * distance, (dy / length) * distance);
     return false;
   };
 
   exports.CONFIG = CONFIG;
+  exports.POWER_UPS = POWER_UPS;
+  exports.statsFor = statsFor;
+  exports.moveCircle = moveCircle;
   exports.applyInput = applyInput;
   exports.moveBy = moveBy;
   exports.resolveWalls = resolveWalls;

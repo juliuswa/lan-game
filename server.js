@@ -3,13 +3,15 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { WebSocketServer, WebSocket } = require("ws");
-const { CONFIG, applyInput, moveBy, resolveWalls, isHardHit } = require("./shared");
+const { CONFIG, POWER_UPS, statsFor, applyInput, moveBy, moveCircle, resolveWalls, isHardHit } = require("./shared");
 
 const PORT = 3000;
 const TICK_MS = 1000 / 60;
 const MAX_INPUTS_PER_TICK = 8;
 const MAX_QUEUED_INPUTS = 120;
-const ROUND_RESTART_MS = 4000;
+const INTERMISSION_MIN_MS = 2500;
+const PICK_TIMEOUT_MS = 20000;
+const MATCH_OVER_MS = 6000;
 const KNOCKBACK_SPEED = 15;
 const KNOCKBACK_FRICTION = 0.9;
 const KNOCKBACK_MIN_SPEED = 0.2;
@@ -29,7 +31,11 @@ const STATIC_FILES = {
 const players = new Map();
 let coins = [];
 let spawner = null;
-let winner = null;
+let phase = "playing";
+let roundWinner = null;
+let matchWinner = null;
+let phaseMinEndsAt = 0;
+let phaseEndsAt = 0;
 let nextId = 1;
 
 const randomPosition = (radius) => {
@@ -63,8 +69,7 @@ const reflect = (x, y, normal) => {
   return { x: x - 2 * dot * normal.x, y: y - 2 * dot * normal.y };
 };
 
-const bounceOffWalls = () => {
-  const normal = resolveWalls(spawner, CONFIG.spawnerRadius);
+const bounceOffWalls = (normal) => {
   if (!normal) return;
   const heading = reflect(Math.cos(spawner.heading), Math.sin(spawner.heading), normal);
   spawner.heading = Math.atan2(heading.y, heading.x);
@@ -75,18 +80,22 @@ const bounceOffWalls = () => {
 
 const moveSpawner = () => {
   spawner.heading += (Math.random() - 0.5) * SPAWNER_TURN_RATE;
-  spawner.x += Math.cos(spawner.heading) * SPAWNER_SPEED + spawner.pushX;
-  spawner.y += Math.sin(spawner.heading) * SPAWNER_SPEED + spawner.pushY;
+  const normal = moveCircle(
+    spawner,
+    Math.cos(spawner.heading) * SPAWNER_SPEED + spawner.pushX,
+    Math.sin(spawner.heading) * SPAWNER_SPEED + spawner.pushY,
+    CONFIG.spawnerRadius,
+  );
   spawner.pushX *= SPAWNER_PUSH_FRICTION;
   spawner.pushY *= SPAWNER_PUSH_FRICTION;
-  bounceOffWalls();
+  bounceOffWalls(normal);
 };
 
 const overlapWithSpawner = (player) => {
   const dx = spawner.x - player.x;
   const dy = spawner.y - player.y;
   const distance = Math.hypot(dx, dy);
-  const overlap = CONFIG.playerRadius + CONFIG.spawnerRadius - distance;
+  const overlap = player.radius + CONFIG.spawnerRadius - distance;
   return { overlap, normalX: distance ? dx / distance : 1, normalY: distance ? dy / distance : 0 };
 };
 
@@ -98,8 +107,8 @@ const pushSpawner = (player) => {
   resolveWalls(spawner, CONFIG.spawnerRadius);
   if (player.dashTicks > 0) {
     player.dashTicks = 0;
-    spawner.pushX = normalX * SPAWNER_DASH_PUSH;
-    spawner.pushY = normalY * SPAWNER_DASH_PUSH;
+    spawner.pushX = normalX * SPAWNER_DASH_PUSH * player.pushMultiplier;
+    spawner.pushY = normalY * SPAWNER_DASH_PUSH * player.pushMultiplier;
   }
   const remaining = overlapWithSpawner(player);
   if (remaining.overlap > 0) moveBy(player, -remaining.normalX * remaining.overlap, -remaining.normalY * remaining.overlap);
@@ -124,32 +133,83 @@ const hitWall = (player) => {
   player.invulnerableUntil = now + WALL_HIT_INVULNERABLE_MS;
 };
 
-const resetRound = () => {
+const emptyPowerUps = () => Object.fromEntries(POWER_UPS.map(({ key }) => [key, 0]));
+
+const placeForNewRound = (player) => {
+  Object.assign(player, statsFor(player.powerUps), freshMotionState(), { score: 0, pendingPick: false });
+  Object.assign(player, randomPosition(player.radius));
+};
+
+const startRound = () => {
   spawner = createSpawner();
   coins = Array.from({ length: CONFIG.coinCount }, spawnCoin);
+  for (const player of players.values()) placeForNewRound(player);
+  phase = "playing";
+  roundWinner = null;
+};
+
+const startMatch = () => {
   for (const player of players.values()) {
-    Object.assign(player, randomPosition(CONFIG.playerRadius), freshMotionState(), { score: 0 });
+    player.roundWins = 0;
+    player.powerUps = emptyPowerUps();
   }
-  winner = null;
+  matchWinner = null;
+  startRound();
+};
+
+const endRound = (winnerPlayer) => {
+  const now = Date.now();
+  roundWinner = winnerPlayer.name;
+  winnerPlayer.roundWins += 1;
+  if (winnerPlayer.roundWins >= CONFIG.roundsToWin) {
+    matchWinner = winnerPlayer.name;
+    phase = "matchOver";
+    phaseEndsAt = now + MATCH_OVER_MS;
+    return;
+  }
+  const lowestScore = Math.min(...[...players.values()].map((player) => player.score));
+  for (const player of players.values()) player.pendingPick = player.score === lowestScore;
+  phase = "intermission";
+  phaseMinEndsAt = now + INTERMISSION_MIN_MS;
+  phaseEndsAt = now + PICK_TIMEOUT_MS;
+};
+
+const grantPowerUp = (player, key) => {
+  player.powerUps[key] += 1;
+  player.pendingPick = false;
+};
+
+const randomPowerUpKey = () => POWER_UPS[Math.floor(Math.random() * POWER_UPS.length)].key;
+
+const updatePhase = () => {
+  const now = Date.now();
+  if (phase === "intermission") {
+    const waiting = [...players.values()].filter((player) => player.pendingPick);
+    if (now >= phaseEndsAt) {
+      for (const player of waiting) grantPowerUp(player, randomPowerUpKey());
+      startRound();
+    } else if (waiting.length === 0 && now >= phaseMinEndsAt) {
+      startRound();
+    }
+  } else if (phase === "matchOver" && now >= phaseEndsAt) {
+    startMatch();
+  }
 };
 
 const collectCoins = (player) => {
   coins = coins.map((coin) => {
-    if (Math.hypot(coin.x - player.x, coin.y - player.y) > CONFIG.playerRadius + CONFIG.coinRadius) return coin;
+    if (Math.hypot(coin.x - player.x, coin.y - player.y) > player.radius + CONFIG.coinRadius) return coin;
     player.score += 1;
     player.dashCharge = Math.min(player.dashCharge + 1, CONFIG.dashCoinCost);
     return spawnCoin();
   });
-  if (player.score >= CONFIG.winScore && !winner) {
-    winner = player.name;
-    setTimeout(resetRound, ROUND_RESTART_MS);
-  }
+  if (player.score >= CONFIG.winScore && phase === "playing") endRound(player);
 };
 
 const processInputs = (player) => {
   for (const { seq, keys } of player.pendingInputs.splice(0, MAX_INPUTS_PER_TICK)) {
     player.ack = seq;
-    if (winner) continue;
+    if (phase !== "playing") continue;
     if (applyInput(player, keys)) hitWall(player);
     collectCoins(player);
   }
@@ -174,15 +234,15 @@ const applyKnockback = (player) => {
 
 const knockBack = (attacker, victim, normalX, normalY) => {
   attacker.dashTicks = 0;
-  victim.knockX = normalX * KNOCKBACK_SPEED;
-  victim.knockY = normalY * KNOCKBACK_SPEED;
+  victim.knockX = normalX * KNOCKBACK_SPEED * attacker.pushMultiplier;
+  victim.knockY = normalY * KNOCKBACK_SPEED * attacker.pushMultiplier;
 };
 
 const resolveCollision = (a, b) => {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const distance = Math.hypot(dx, dy);
-  const minDistance = CONFIG.playerRadius * 2;
+  const minDistance = a.radius + b.radius;
   if (distance >= minDistance) return;
   const normalX = distance ? dx / distance : 1;
   const normalY = distance ? dy / distance : 0;
@@ -205,7 +265,10 @@ const resolveCollisions = () => {
 const broadcast = () => {
   const message = JSON.stringify({
     type: "state",
-    winner,
+    phase,
+    roundWinner,
+    matchWinner,
+    pickSecondsLeft: phase === "intermission" ? Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000)) : 0,
     spawner: { x: spawner.x, y: spawner.y },
     coins,
     players: [...players.values()].map((player) => ({
@@ -215,6 +278,11 @@ const broadcast = () => {
       x: player.x,
       y: player.y,
       score: player.score,
+      roundWins: player.roundWins,
+      powerUps: player.powerUps,
+      pendingPick: player.pendingPick,
+      radius: player.radius,
+      speed: player.speed,
       ack: player.ack,
       dashTicks: player.dashTicks,
       dashX: player.dashX,
@@ -231,6 +299,7 @@ const broadcast = () => {
 };
 
 const tick = () => {
+  updatePhase();
   for (const player of players.values()) processInputs(player);
   for (const player of players.values()) applyKnockback(player);
   resolveCollisions();
@@ -245,13 +314,13 @@ const createPlayer = (name, socket) => {
     id,
     name: String(name || `Player ${id}`).slice(0, 16),
     color: COLORS[(Number(id) - 1) % COLORS.length],
-    score: 0,
     ack: 0,
+    roundWins: 0,
+    powerUps: emptyPowerUps(),
     pendingInputs: [],
     socket,
-    ...randomPosition(CONFIG.playerRadius),
-    ...freshMotionState(),
   };
+  placeForNewRound(player);
   players.set(id, player);
   return player;
 };
@@ -292,6 +361,8 @@ new WebSocketServer({ server }).on("connection", (socket) => {
       if (player.pendingInputs.length < MAX_QUEUED_INPUTS) {
         player.pendingInputs.push({ seq: message.seq, keys: sanitizeKeys(message.keys) });
       }
+    } else if (message.type === "pick" && player && phase === "intermission" && player.pendingPick) {
+      if (POWER_UPS.some(({ key }) => key === message.powerUp)) grantPowerUp(player, message.powerUp);
     }
   });
 
@@ -300,7 +371,7 @@ new WebSocketServer({ server }).on("connection", (socket) => {
   });
 });
 
-resetRound();
+startMatch();
 setInterval(tick, TICK_MS);
 
 server.listen(PORT, "0.0.0.0", () => {

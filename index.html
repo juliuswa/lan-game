@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Space to dash and shove players — recharges after 5 coins. First to the target wins.</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Space to dash and shove players — recharges after 5 coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -30,7 +30,7 @@
 </div>
 <script src="/shared.js"></script>
 <script>
-const { CONFIG, applyInput } = window.Shared;
+const { CONFIG, POWER_UPS, applyInput } = window.Shared;
 const INTERPOLATION_DELAY_MS = 50;
 const SNAPSHOT_HISTORY_MS = 1000;
 const STEP_MS = CONFIG.stepSeconds * 1000;
@@ -48,6 +48,7 @@ let predicted = null;
 let pendingInputs = [];
 let nextSeq = 1;
 let dashRequested = false;
+let selectedPowerUp = 0;
 let snapshots = [];
 let lastScoresKey = "";
 let accumulator = 0;
@@ -55,7 +56,24 @@ let lastFrameTime = performance.now();
 
 const isMoving = () => keys.up || keys.down || keys.left || keys.right;
 
+const myPlayer = () => latestState && latestState.players.find((player) => player.id === playerId);
+
+const isPicking = () => latestState && latestState.phase === "intermission" && Boolean(myPlayer() && myPlayer().pendingPick);
+
+const handlePickKey = (event) => {
+  const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
+  if (direction === "left" || direction === "up") selectedPowerUp = (selectedPowerUp + POWER_UPS.length - 1) % POWER_UPS.length;
+  else if (direction === "right" || direction === "down") selectedPowerUp = (selectedPowerUp + 1) % POWER_UPS.length;
+  else if (event.code === "Space" && !event.repeat) socket.send(JSON.stringify({ type: "pick", powerUp: POWER_UPS[selectedPowerUp].key }));
+  else return;
+  event.preventDefault();
+};
+
 const setKey = (event, pressed) => {
+  if (pressed && isPicking()) {
+    handlePickKey(event);
+    return;
+  }
   if (event.code === "Space" && playerId) {
     event.preventDefault();
     if (pressed && !event.repeat) dashRequested = true;
@@ -75,13 +93,13 @@ const reconcile = (state) => {
   const me = state.players.find((player) => player.id === playerId);
   if (!me) return;
   pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
-  const { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge } = me;
-  predicted = { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge };
-  if (!state.winner) for (const input of pendingInputs) applyInput(predicted, input.keys);
+  const { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
+  predicted = { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
+  if (state.phase === "playing") for (const input of pendingInputs) applyInput(predicted, input.keys);
 };
 
 const simulateStep = () => {
-  if (!predicted || latestState.winner) {
+  if (!predicted || latestState.phase !== "playing") {
     dashRequested = false;
     return;
   }
@@ -114,10 +132,10 @@ const drawCircle = (x, y, radius, color) => {
   ctx.fill();
 };
 
-const drawDashCharge = (x, y, charge) => {
+const drawDashCharge = (x, y, radius, charge) => {
   const ready = charge >= CONFIG.dashCoinCost;
   ctx.beginPath();
-  ctx.arc(x, y, CONFIG.playerRadius + 6, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * charge) / CONFIG.dashCoinCost);
+  ctx.arc(x, y, radius + 6, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * charge) / CONFIG.dashCoinCost);
   ctx.lineWidth = 3;
   ctx.strokeStyle = ready ? "#46f0f0" : "rgba(70,240,240,0.4)";
   ctx.stroke();
@@ -141,6 +159,66 @@ const drawWalls = () => {
   for (const wall of CONFIG.walls) ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
 };
 
+const drawOverlayTitle = (text, y) => {
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "white";
+  ctx.font = "bold 40px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText(text, canvas.width / 2, y);
+};
+
+const drawPowerUpCards = () => {
+  const cardWidth = 200;
+  const cardHeight = 110;
+  const gap = 24;
+  const left = (canvas.width - (cardWidth * POWER_UPS.length + gap * (POWER_UPS.length - 1))) / 2;
+  const top = 250;
+  const owned = myPlayer().powerUps;
+  POWER_UPS.forEach((powerUp, index) => {
+    const x = left + index * (cardWidth + gap);
+    const selected = index === selectedPowerUp;
+    ctx.fillStyle = selected ? "#2b3f8a" : "#2a2a2a";
+    ctx.fillRect(x, top, cardWidth, cardHeight);
+    ctx.lineWidth = selected ? 4 : 2;
+    ctx.strokeStyle = selected ? "#46f0f0" : "#555";
+    ctx.strokeRect(x, top, cardWidth, cardHeight);
+    ctx.fillStyle = "white";
+    ctx.font = "bold 22px system-ui";
+    ctx.fillText(powerUp.label, x + cardWidth / 2, top + 38);
+    ctx.font = "16px system-ui";
+    ctx.fillText(powerUp.description, x + cardWidth / 2, top + 66);
+    ctx.fillStyle = "#aaa";
+    ctx.fillText(`owned: ${owned[powerUp.key]}`, x + cardWidth / 2, top + 92);
+  });
+  ctx.fillStyle = "#ccc";
+  ctx.font = "18px system-ui";
+  ctx.fillText(`A/D to choose · Space to confirm · ${latestState.pickSecondsLeft}s`, canvas.width / 2, top + cardHeight + 44);
+};
+
+const drawIntermission = () => {
+  drawOverlayTitle(`${latestState.roundWinner} wins the round!`, 160);
+  if (isPicking()) {
+    ctx.font = "20px system-ui";
+    ctx.fillText("You had the fewest coins — pick a power-up", canvas.width / 2, 210);
+    drawPowerUpCards();
+    return;
+  }
+  const waitingFor = latestState.players.filter((player) => player.pendingPick).map((player) => player.name);
+  ctx.font = "20px system-ui";
+  ctx.fillText(
+    waitingFor.length ? `Waiting for ${waitingFor.join(", ")} to pick a power-up… ${latestState.pickSecondsLeft}s` : "Next round starting…",
+    canvas.width / 2,
+    300,
+  );
+};
+
+const drawMatchOver = () => {
+  drawOverlayTitle(`${latestState.matchWinner} wins the match!`, canvas.height / 2);
+  ctx.font = "20px system-ui";
+  ctx.fillText("New match starting soon…", canvas.width / 2, canvas.height / 2 + 50);
+};
+
 const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawWalls();
@@ -151,38 +229,46 @@ const render = (now) => {
     const isMe = player.id === playerId;
     const { x, y } = (isMe ? predicted : interpolatedPosition((snapshot) => snapshot.players.get(player.id), now - INTERPOLATION_DELAY_MS)) || player;
     ctx.globalAlpha = player.hurt && Math.floor(now / 100) % 2 ? 0.3 : 1;
-    drawCircle(x, y, CONFIG.playerRadius, player.color);
+    drawCircle(x, y, player.radius, player.color);
     ctx.globalAlpha = 1;
     if (isMe) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = "white";
       ctx.stroke();
-      drawDashCharge(x, y, predicted.dashCharge);
+      drawDashCharge(x, y, player.radius, predicted.dashCharge);
     }
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(player.name, x, y - CONFIG.playerRadius - 6);
+    ctx.fillText(player.name, x, y - player.radius - 6);
   }
-  if (latestState.winner) {
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "white";
-    ctx.font = "bold 48px system-ui";
-    ctx.fillText(`${latestState.winner} wins!`, canvas.width / 2, canvas.height / 2);
-  }
+  if (latestState.phase === "intermission") drawIntermission();
+  if (latestState.phase === "matchOver") drawMatchOver();
 };
 
+const powerUpSummary = (powerUps) =>
+  POWER_UPS.filter(({ key }) => powerUps[key] > 0)
+    .map(({ key, label }) => `${label} ×${powerUps[key]}`)
+    .join(", ");
+
 const renderScores = (state) => {
-  const ranked = [...state.players].sort((a, b) => b.score - a.score);
-  const scoresKey = ranked.map((player) => `${player.id}:${player.score}`).join(",");
+  const ranked = [...state.players].sort((a, b) => b.roundWins - a.roundWins || b.score - a.score);
+  const scoresKey = JSON.stringify(ranked.map(({ id, score, roundWins, powerUps }) => [id, score, roundWins, powerUps]));
   if (scoresKey === lastScoresKey) return;
   lastScoresKey = scoresKey;
   scoresList.innerHTML = "";
   for (const player of ranked) {
     const item = document.createElement("li");
-    item.textContent = `${player.name}: ${player.score} / ${CONFIG.winScore}`;
+    item.textContent = `${player.name}: ${player.score} / ${CONFIG.winScore} · rounds ${player.roundWins} / ${CONFIG.roundsToWin}`;
     item.style.color = player.color;
+    const summary = powerUpSummary(player.powerUps);
+    if (summary) {
+      const detail = document.createElement("div");
+      detail.textContent = summary;
+      detail.style.fontSize = "13px";
+      detail.style.color = "#aaa";
+      item.appendChild(detail);
+    }
     scoresList.appendChild(item);
   }
 };
