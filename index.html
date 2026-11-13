@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim (A/D rotate the arrow, you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim (A/D rotate the arrow, you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps that hold you in place for 5s. Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -29,6 +29,7 @@
   <div id="board"><h3>Scores</h3><ul id="scores"></ul></div>
 </div>
 <script src="/shared.js"></script>
+<script src="/effects.js"></script>
 <script>
 const { CONFIG, POWER_UPS, applyInput, setArena } = window.Shared;
 const INTERPOLATION_DELAY_MS = 50;
@@ -38,6 +39,12 @@ const STEP_MS = CONFIG.stepSeconds * 1000;
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const scoresList = document.getElementById("scores");
+const effects = window.createEffects(ctx);
+const COIN_POP_MS = 220;
+const SPAWNER_POP_MS = 400;
+const coinFirstSeen = new Map();
+let spawnerAppearedAt = 0;
+let lastRenderTime = performance.now();
 const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
 const keys = { up: false, down: false, left: false, right: false, aim: false };
 
@@ -99,11 +106,12 @@ const reconcile = (state) => {
   pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
   const { x, y, dashTicks, aiming, aimAngle, driftX, driftY, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
   predicted = { x, y, dashTicks, aiming, aimAngle, driftX, driftY, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
-  if (state.phase === "playing") for (const input of pendingInputs) applyInput(predicted, input.keys);
+  predicted.trapped = me.trapped;
+  if (state.phase === "playing" && !me.trapped) for (const input of pendingInputs) applyInput(predicted, input.keys);
 };
 
 const simulateStep = () => {
-  if (!predicted || latestState.phase !== "playing") return;
+  if (!predicted || latestState.phase !== "playing" || predicted.trapped) return;
   if (!isMoving() && !keys.aim && !predicted.aiming && predicted.dashTicks === 0) return;
   const input = { seq: nextSeq++, keys: { ...keys } };
   pendingInputs.push(input);
@@ -163,33 +171,95 @@ const drawAimArrow = (x, y, radius, angle, color) => {
   ctx.restore();
 };
 
+const easeOutBack = (t) => 1 + 2.7 * Math.pow(t - 1, 3) + 1.7 * Math.pow(t - 1, 2);
+
+const popScale = (elapsedMs, durationMs) => (elapsedMs >= durationMs ? 1 : Math.max(0, easeOutBack(elapsedMs / durationMs)));
+
 const drawBlackHole = (hole, now) => {
+  const scale = Math.max(0, Math.min(1, (1 - hole.lifeLeft) * 20, hole.lifeLeft * 8));
+  const radius = hole.radius * scale;
+  if (radius <= 0) return;
+  effects.blackHoleSuction(hole.x, hole.y, hole.radius);
   ctx.save();
-  ctx.globalAlpha = Math.min(1, hole.lifeLeft * 5);
-  const glow = ctx.createRadialGradient(hole.x, hole.y, hole.radius * 0.3, hole.x, hole.y, hole.radius * 1.6);
+  const glow = ctx.createRadialGradient(hole.x, hole.y, radius * 0.3, hole.x, hole.y, radius * 1.6);
   glow.addColorStop(0, "#000");
   glow.addColorStop(0.6, "rgba(120,40,200,0.6)");
   glow.addColorStop(1, "rgba(120,40,200,0)");
-  drawCircle(hole.x, hole.y, hole.radius * 1.6, glow);
-  drawCircle(hole.x, hole.y, hole.radius * 0.8, "#000");
+  drawCircle(hole.x, hole.y, radius * 1.6, glow);
+  drawCircle(hole.x, hole.y, radius * 0.8, "#000");
   const spin = now / 300;
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#b47cff";
   for (let i = 0; i < 3; i++) {
     ctx.beginPath();
-    ctx.arc(hole.x, hole.y, hole.radius * (0.9 + i * 0.15), spin + (i * Math.PI * 2) / 3, spin + (i * Math.PI * 2) / 3 + Math.PI / 2);
+    ctx.arc(hole.x, hole.y, radius * (0.9 + i * 0.15), spin + (i * Math.PI * 2) / 3, spin + (i * Math.PI * 2) / 3 + Math.PI / 2);
     ctx.stroke();
   }
   ctx.restore();
 };
 
-const drawSpawner = (x, y) => {
-  drawCircle(x, y, CONFIG.spawnerRadius, "#5a4510");
+const coinKey = (coin) => `${Math.round(coin.x)},${Math.round(coin.y)}`;
+
+const drawCoins = (now) => {
+  const visible = new Set();
+  for (const coin of latestState.coins) {
+    const key = coinKey(coin);
+    visible.add(key);
+    if (!coinFirstSeen.has(key)) coinFirstSeen.set(key, now);
+    const scale = popScale(now - coinFirstSeen.get(key), COIN_POP_MS);
+    const shimmer = 1 + 0.08 * Math.sin(now / 180 + coin.x);
+    drawCircle(coin.x, coin.y, CONFIG.coinRadius * scale * shimmer, "gold");
+    drawCircle(coin.x - 2 * scale, coin.y - 2 * scale, CONFIG.coinRadius * 0.35 * scale, "rgba(255,255,255,0.7)");
+  }
+  for (const key of coinFirstSeen.keys()) if (!visible.has(key)) coinFirstSeen.delete(key);
+};
+
+const drawHitFlash = (x, y, radius, amount) => {
+  if (amount <= 0) return;
+  ctx.globalAlpha = amount;
+  drawCircle(x, y, radius + 2, "white");
+  ctx.globalAlpha = 1;
+};
+
+const drawTrap = (trap) => {
+  const spikes = 8;
+  ctx.beginPath();
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (i / (spikes * 2)) * Math.PI * 2;
+    const distance = i % 2 ? trap.radius * 0.55 : trap.radius;
+    ctx.lineTo(trap.x + Math.cos(angle) * distance, trap.y + Math.sin(angle) * distance);
+  }
+  ctx.closePath();
+  ctx.fillStyle = "#8b8b8b";
+  ctx.fill();
+  drawCircle(trap.x, trap.y, trap.radius * 0.35, "#c0392b");
+};
+
+const drawTrappedCage = (x, y, radius, secondsLeft) => {
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#c0392b";
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(angle) * (radius - 4), y + Math.sin(angle) * (radius - 4));
+    ctx.lineTo(x + Math.cos(angle) * (radius + 8), y + Math.sin(angle) * (radius + 8));
+    ctx.stroke();
+  }
+  ctx.fillStyle = "white";
+  ctx.font = "bold 14px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(secondsLeft), x, y);
+  ctx.textBaseline = "alphabetic";
+};
+
+const drawSpawner = (x, y, scale) => {
+  drawCircle(x, y, CONFIG.spawnerRadius * scale, "#5a4510");
   ctx.lineWidth = 4;
   ctx.strokeStyle = "gold";
   ctx.stroke();
   ctx.fillStyle = "gold";
-  ctx.font = "bold 24px system-ui";
+  ctx.font = `bold ${Math.round(24 * scale)}px system-ui`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText("$", x, y);
@@ -272,20 +342,30 @@ const drawMatchOver = () => {
 };
 
 const render = (now) => {
+  const dt = Math.min((now - lastRenderTime) / 1000, 0.1);
+  lastRenderTime = now;
+  effects.update(dt);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const shake = effects.shakeOffset();
+  ctx.save();
+  ctx.translate(shake.x, shake.y);
   drawArena();
   for (const hole of latestState.blackHoles) drawBlackHole(hole, now);
+  for (const trap of latestState.traps) drawTrap(trap);
   if (latestState.spawner) {
     const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
-    drawSpawner(spawnerPosition.x, spawnerPosition.y);
+    drawSpawner(spawnerPosition.x, spawnerPosition.y, popScale(now - spawnerAppearedAt, SPAWNER_POP_MS));
   }
-  for (const coin of latestState.coins) drawCircle(coin.x, coin.y, CONFIG.coinRadius, "gold");
+  drawCoins(now);
+  effects.drawGhosts();
   for (const player of latestState.players) {
     const isMe = player.id === playerId;
     const { x, y } = (isMe ? predicted : interpolatedPosition((snapshot) => snapshot.players.get(player.id), now - INTERPOLATION_DELAY_MS)) || player;
+    if ((isMe ? predicted : player).dashTicks > 0) effects.dashTrail(x, y, player.radius, player.color);
     ctx.globalAlpha = player.hurt && Math.floor(now / 100) % 2 ? 0.3 : 1;
     drawCircle(x, y, player.radius, player.color);
     ctx.globalAlpha = 1;
+    drawHitFlash(x, y, player.radius, effects.flashAmount(player.id, now));
     if (isMe) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = "white";
@@ -293,12 +373,15 @@ const render = (now) => {
       drawDashCharge(x, y, player.radius, predicted.dashCharge);
     }
     const aimSource = isMe ? predicted : player;
+    if (player.trapped) drawTrappedCage(x, y, player.radius, player.trapSecondsLeft);
     if (aimSource.aiming) drawAimArrow(x, y, player.radius, aimSource.aimAngle, isMe ? "white" : player.color);
     ctx.fillStyle = "#eee";
     ctx.font = "14px system-ui";
     ctx.textAlign = "center";
     ctx.fillText(player.name, x, y - player.radius - 6);
   }
+  effects.draw();
+  ctx.restore();
   if (latestState.phase === "intermission") drawIntermission();
   if (latestState.phase === "matchOver") drawMatchOver();
 };
@@ -332,8 +415,10 @@ const renderScores = (state) => {
 
 const receiveState = (state) => {
   const now = performance.now();
+  if (state.spawner && !(latestState && latestState.spawner)) spawnerAppearedAt = now;
   latestState = state;
   setArena(state.arena);
+  for (const event of state.events) effects.handleEvent(event, playerId, now);
   snapshots.push({ time: now, spawner: state.spawner, players: new Map(state.players.map((player) => [player.id, player])) });
   snapshots = snapshots.filter((snapshot) => now - snapshot.time < SNAPSHOT_HISTORY_MS);
   reconcile(state);

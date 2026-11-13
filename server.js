@@ -27,6 +27,11 @@ const BLACK_HOLE_LIFETIME_MS = 8000;
 const BLACK_HOLE_SPAWN_MIN_MS = 3000;
 const BLACK_HOLE_SPAWN_MAX_MS = 7000;
 const BONUS_COINS = 5;
+const TRAP_RADIUS = 10;
+const MAX_TRAPS = 6;
+const TRAP_DROP_MIN_MS = 5000;
+const TRAP_DROP_MAX_MS = 15000;
+const TRAP_HOLD_MS = 5000;
 const COIN_SCATTER_DISTANCE = 90;
 const ARENA_BORDER_ONLY = [];
 const WALL_HIT_COIN_LOSS = 3;
@@ -45,6 +50,7 @@ const COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4"
 const STATIC_FILES = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/shared.js": { file: "shared.js", type: "text/javascript; charset=utf-8" },
+  "/effects.js": { file: "effects.js", type: "text/javascript; charset=utf-8" },
 };
 
 const players = new Map();
@@ -54,6 +60,9 @@ let spawner = null;
 let spawnerRespawnAt = 0;
 let blackHoles = [];
 let nextBlackHoleAt = 0;
+let traps = [];
+let events = [];
+let nextTrapAt = 0;
 let phase = "playing";
 let roundWinner = null;
 let matchWinner = null;
@@ -62,6 +71,8 @@ let phaseEndsAt = 0;
 let nextId = 1;
 
 const randomBetween = (min, max) => min + Math.random() * (max - min);
+
+const emit = (type, data) => events.push({ type, ...data });
 
 const W = CONFIG.width;
 const H = CONFIG.height;
@@ -156,6 +167,7 @@ const spawnCoin = () => {
   const distance = minDistance + Math.random() * (COIN_SCATTER_DISTANCE - minDistance);
   const coin = { x: spawner.x + Math.cos(angle) * distance, y: spawner.y + Math.sin(angle) * distance };
   resolveWalls(coin, CONFIG.coinRadius * 2);
+  emit("coinSpawn", { x: coin.x, y: coin.y });
   return coin;
 };
 
@@ -182,6 +194,7 @@ const bounceOffWalls = (normal) => {
 };
 
 const breakSpawner = () => {
+  emit("spawnerBreak", { x: spawner.x, y: spawner.y });
   spawner = null;
   spawnerRespawnAt = Date.now() + SPAWNER_RESPAWN_MS;
 };
@@ -189,6 +202,7 @@ const breakSpawner = () => {
 const respawnSpawnerWhenDue = () => {
   if (spawner || Date.now() < spawnerRespawnAt) return;
   spawner = createSpawner();
+  emit("spawnerSpawn", { x: spawner.x, y: spawner.y });
   while (coins.length < CONFIG.coinCount) coins.push(spawnCoin());
 };
 
@@ -234,6 +248,14 @@ const pushSpawner = (player) => {
     player.dashTicks = 0;
     spawner.pushX = normalX * SPAWNER_DASH_PUSH * player.pushMultiplier;
     spawner.pushY = normalY * SPAWNER_DASH_PUSH * player.pushMultiplier;
+    emit("spawnerHit", {
+      x: player.x + normalX * player.radius,
+      y: player.y + normalY * player.radius,
+      normalX,
+      normalY,
+      strength: player.pushMultiplier,
+      attackerId: player.id,
+    });
   }
   const remaining = overlapWithSpawner(player);
   if (remaining.overlap > 0) moveBy(player, -remaining.normalX * remaining.overlap, -remaining.normalY * remaining.overlap);
@@ -253,13 +275,16 @@ const freshMotionState = () => ({
   knockX: 0,
   knockY: 0,
   invulnerableUntil: 0,
+  trappedUntil: 0,
 });
 
 const hitWall = (player) => {
   const now = Date.now();
   if (now < player.invulnerableUntil) return;
-  player.score = Math.max(0, player.score - WALL_HIT_COIN_LOSS);
+  const lost = Math.min(player.score, WALL_HIT_COIN_LOSS);
+  player.score -= lost;
   player.invulnerableUntil = now + WALL_HIT_INVULNERABLE_MS;
+  emit("wallHit", { x: player.x, y: player.y, playerId: player.id, lost });
 };
 
 const emptyPowerUps = () => Object.fromEntries(POWER_UPS.map(({ key }) => [key, 0]));
@@ -267,6 +292,7 @@ const emptyPowerUps = () => Object.fromEntries(POWER_UPS.map(({ key }) => [key, 
 const placeForNewRound = (player) => {
   Object.assign(player, statsFor(player.powerUps), freshMotionState(), { score: 0, pendingPick: false });
   Object.assign(player, randomPosition(player.radius));
+  emit("playerSpawn", { x: player.x, y: player.y, radius: player.radius, color: player.color });
 };
 
 const scheduleNextBlackHole = () => {
@@ -275,19 +301,56 @@ const scheduleNextBlackHole = () => {
 
 const updateBlackHoles = () => {
   const now = Date.now();
+  for (const hole of blackHoles) if (hole.expiresAt <= now) emit("holeClose", { x: hole.x, y: hole.y });
   blackHoles = blackHoles.filter((hole) => hole.expiresAt > now);
   if (now < nextBlackHoleAt) return;
-  if (blackHoles.length < MAX_BLACK_HOLES) blackHoles.push({ ...randomPosition(BLACK_HOLE_RADIUS), expiresAt: now + BLACK_HOLE_LIFETIME_MS });
+  if (blackHoles.length < MAX_BLACK_HOLES) {
+    const hole = { ...randomPosition(BLACK_HOLE_RADIUS), expiresAt: now + BLACK_HOLE_LIFETIME_MS };
+    blackHoles.push(hole);
+    emit("holeOpen", { x: hole.x, y: hole.y });
+  }
   scheduleNextBlackHole();
+};
+
+const scheduleNextTrap = () => {
+  nextTrapAt = Date.now() + randomBetween(TRAP_DROP_MIN_MS, TRAP_DROP_MAX_MS);
+};
+
+const dropTrapWhenDue = () => {
+  if (Date.now() < nextTrapAt || !spawner) return;
+  if (traps.length >= MAX_TRAPS) {
+    scheduleNextTrap();
+    return;
+  }
+  const position = { x: spawner.x, y: spawner.y };
+  if (!isOpenSpot(position, TRAP_RADIUS)) return;
+  traps.push(position);
+  emit("trapDrop", position);
+  scheduleNextTrap();
+};
+
+const isTrapped = (player) => Date.now() < player.trappedUntil;
+
+const stepOnTraps = (player) => {
+  if (isTrapped(player)) return;
+  const trap = traps.find((candidate) => Math.hypot(candidate.x - player.x, candidate.y - player.y) < player.radius + TRAP_RADIUS);
+  if (!trap) return;
+  traps = traps.filter((candidate) => candidate !== trap);
+  Object.assign(player, { trappedUntil: Date.now() + TRAP_HOLD_MS, dashTicks: 0, aiming: false });
+  emit("trapSnap", { x: player.x, y: player.y, radius: player.radius, playerId: player.id });
 };
 
 const fallIntoBlackHoles = (player) => {
   if (!blackHoles.some((hole) => Math.hypot(hole.x - player.x, hole.y - player.y) < BLACK_HOLE_RADIUS)) return;
+  const from = { x: player.x, y: player.y };
   Object.assign(player, randomPosition(player.radius), { dashTicks: 0, aiming: false, knockX: 0, knockY: 0 });
+  emit("teleport", { fromX: from.x, fromY: from.y, toX: player.x, toY: player.y, radius: player.radius, color: player.color, playerId: player.id });
 };
 
 const startRound = () => {
   blackHoles = [];
+  traps = [];
+  scheduleNextTrap();
   scheduleNextBlackHole();
   arena = generateArena();
   spawner = createSpawner();
@@ -345,6 +408,11 @@ const updatePhase = () => {
   }
 };
 
+const awardBonusCoins = (player) => {
+  emit("bonus", { x: player.x, y: player.y, amount: BONUS_COINS, playerId: player.id });
+  awardCoins(player, BONUS_COINS);
+};
+
 const awardCoins = (player, count) => {
   player.score += count;
   player.dashCharge = Math.min(player.dashCharge + count, CONFIG.dashCoinCost);
@@ -356,6 +424,7 @@ const collectCoins = (player) => {
   coins = coins.flatMap((coin) => {
     if (Math.hypot(coin.x - player.x, coin.y - player.y) > player.radius + CONFIG.coinRadius) return [coin];
     collected += 1;
+    emit("coin", { x: coin.x, y: coin.y, playerX: player.x, playerY: player.y, playerId: player.id });
     return spawner ? [spawnCoin()] : [];
   });
   if (collected) awardCoins(player, collected);
@@ -364,7 +433,7 @@ const collectCoins = (player) => {
 const processInputs = (player) => {
   for (const { seq, keys } of player.pendingInputs.splice(0, MAX_INPUTS_PER_TICK)) {
     player.ack = seq;
-    if (phase !== "playing") continue;
+    if (phase !== "playing" || isTrapped(player)) continue;
     if (applyInput(player, keys)) hitWall(player);
     collectCoins(player);
   }
@@ -389,6 +458,16 @@ const applyKnockback = (player) => {
 
 const knockBack = (attacker, victim, normalX, normalY) => {
   attacker.dashTicks = 0;
+  emit("hit", {
+    x: attacker.x + normalX * attacker.radius,
+    y: attacker.y + normalY * attacker.radius,
+    normalX,
+    normalY,
+    strength: attacker.pushMultiplier,
+    color: attacker.color,
+    attackerId: attacker.id,
+    victimId: victim.id,
+  });
   victim.knockX = normalX * KNOCKBACK_SPEED * attacker.pushMultiplier;
   victim.knockY = normalY * KNOCKBACK_SPEED * attacker.pushMultiplier;
 };
@@ -421,10 +500,12 @@ const broadcast = () => {
   const message = JSON.stringify({
     type: "state",
     phase,
+    events,
     roundWinner,
     matchWinner,
     pickSecondsLeft: phase === "intermission" ? Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000)) : 0,
     arena,
+    traps: traps.map(({ x, y }) => ({ x, y, radius: TRAP_RADIUS })),
     blackHoles: blackHoles.map((hole) => ({
       x: hole.x,
       y: hole.y,
@@ -457,11 +538,14 @@ const broadcast = () => {
       faceY: player.faceY,
       dashCharge: player.dashCharge,
       hurt: Date.now() < player.invulnerableUntil,
+      trapped: isTrapped(player),
+      trapSecondsLeft: Math.max(0, Math.ceil((player.trappedUntil - Date.now()) / 1000)),
     })),
   });
   for (const player of players.values()) {
     if (player.socket.readyState === WebSocket.OPEN) player.socket.send(message);
   }
+  events = [];
 };
 
 const tick = () => {
@@ -474,7 +558,11 @@ const tick = () => {
   if (spawner) for (const player of players.values()) pushSpawner(player);
   if (phase === "playing") {
     updateBlackHoles();
-    for (const player of players.values()) fallIntoBlackHoles(player);
+    dropTrapWhenDue();
+    for (const player of players.values()) {
+      fallIntoBlackHoles(player);
+      stepOnTraps(player);
+    }
   }
   broadcast();
 };
@@ -533,7 +621,7 @@ new WebSocketServer({ server }).on("connection", (socket) => {
         player.pendingInputs.push({ seq: message.seq, keys: sanitizeKeys(message.keys) });
       }
     } else if (message.type === "bonusCoins" && player && phase === "playing") {
-      awardCoins(player, BONUS_COINS);
+      awardBonusCoins(player);
     } else if (message.type === "pick" && player && phase === "intermission" && player.pendingPick) {
       if (POWER_UPS.some(({ key }) => key === message.powerUp)) grantPowerUp(player, message.powerUp);
     }
