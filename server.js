@@ -58,7 +58,13 @@ const COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4"
 const STATIC_FILES = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/shared.js": { file: "shared.js", type: "text/javascript; charset=utf-8" },
-  "/effects.js": { file: "effects.js", type: "text/javascript; charset=utf-8" },
+  "/client/main.js": { file: "client/main.js", type: "text/javascript; charset=utf-8" },
+  "/client/world.js": { file: "client/world.js", type: "text/javascript; charset=utf-8" },
+  "/client/effects.js": { file: "client/effects.js", type: "text/javascript; charset=utf-8" },
+  "/client/hud.js": { file: "client/hud.js", type: "text/javascript; charset=utf-8" },
+  "/vendor/three.module.js": { file: "node_modules/three/build/three.module.js", type: "text/javascript; charset=utf-8" },
+  "/vendor/CSS2DRenderer.js": { file: "node_modules/three/examples/jsm/renderers/CSS2DRenderer.js", type: "text/javascript; charset=utf-8" },
+  "/vendor/RoomEnvironment.js": { file: "node_modules/three/examples/jsm/environments/RoomEnvironment.js", type: "text/javascript; charset=utf-8" },
 };
 
 const players = new Map();

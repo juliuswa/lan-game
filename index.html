@@ -5,565 +5,106 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Coin Rush</title>
 <style>
-  body { margin: 0; background: #111; color: #eee; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; }
-  h1 { margin: 12px 0 4px; }
-  #join { margin-top: 40px; display: flex; gap: 8px; }
-  input, button { font-size: 18px; padding: 8px 12px; border-radius: 6px; border: none; }
-  button { background: #4363d8; color: white; cursor: pointer; }
-  #game { display: none; gap: 16px; align-items: flex-start; }
-  canvas { cursor: crosshair; background: #1d1d1d; border: 2px solid #333; border-radius: 8px; max-width: 95vw; }
-  #board { min-width: 180px; }
-  #board li { list-style: none; margin: 4px 0; font-size: 18px; }
-  #board ul { padding: 0; }
+  :root {
+    --panel: rgba(12, 14, 22, 0.78);
+    --panel-border: rgba(120, 140, 200, 0.25);
+    --text: #eef1f8;
+    --muted: #9aa3b8;
+    --accent: #46f0f0;
+    --gold: #ffd700;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #07080d; color: var(--text); font-family: system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; cursor: crosshair; }
+  #stage canvas { display: block; }
+  .label-layer { position: absolute; inset: 0; pointer-events: none; }
+
+  #join-screen { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 40%, #1b2140, #07080d 70%); z-index: 10; padding: 16px; }
+  body.in-game #join-screen { display: none; }
+  .join-card { max-width: 560px; text-align: center; }
+  .join-card h1 { font-size: clamp(40px, 9vw, 72px); margin: 0 0 8px; color: var(--gold); text-shadow: 0 0 24px rgba(255, 200, 0, 0.45); letter-spacing: 2px; }
+  .join-card p { color: var(--muted); line-height: 1.5; }
+  #join { display: flex; gap: 8px; justify-content: center; margin-top: 24px; flex-wrap: wrap; }
+  input, button { font-size: 18px; padding: 10px 14px; border-radius: 8px; border: none; }
+  input { background: #1a1f30; color: var(--text); border: 1px solid var(--panel-border); }
+  button { background: #4363d8; color: white; cursor: pointer; font-weight: 600; }
+
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; backdrop-filter: blur(6px); }
+  #scoreboard { position: fixed; top: 16px; left: 16px; width: 230px; padding: 12px 14px; display: none; z-index: 5; }
+  body.in-game #scoreboard { display: block; }
+  #scoreboard h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); }
+  #scores { list-style: none; margin: 0; padding: 0; }
+  #scores li { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 10px; }
+  .score-name { color: var(--player-color); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .score-coins { color: var(--gold); font-weight: 700; }
+  .score-bar { grid-column: 1 / -1; height: 5px; background: rgba(255, 255, 255, 0.08); border-radius: 3px; overflow: hidden; }
+  .score-fill { height: 100%; background: var(--player-color); transition: width 0.2s; }
+  .score-rounds { grid-column: 1 / -1; color: var(--gold); font-size: 13px; letter-spacing: 2px; }
+  .score-powerups { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+
+  #help { position: fixed; bottom: 16px; left: 16px; max-width: 420px; padding: 10px 14px; font-size: 13px; color: var(--muted); display: none; z-index: 5; }
+  body.in-game #help { display: block; }
+  #help summary { cursor: pointer; color: var(--text); font-weight: 600; }
+  #help p { margin: 8px 0 0; line-height: 1.5; }
+  kbd { background: #222a3d; border: 1px solid #39425a; border-radius: 4px; padding: 0 5px; font-size: 12px; color: var(--text); }
+
+  #overlay { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); min-width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); padding: 24px 28px; text-align: center; z-index: 6; }
+  #overlay[hidden] { display: none; }
+  #overlay h2 { margin: 0 0 6px; font-size: 32px; }
+  #overlay h2.big { font-size: 40px; color: var(--gold); }
+  #overlay .muted { color: var(--muted); }
+  .ready-list { list-style: none; padding: 0; margin: 16px 0 0; }
+  .ready-list li { display: flex; justify-content: center; gap: 16px; font-size: 20px; font-weight: 700; margin: 6px 0; }
+  .ready-name { min-width: 140px; text-align: right; }
+  .ready-yes { color: #2ecc71; min-width: 140px; text-align: left; }
+  .ready-no { color: #777; min-width: 140px; text-align: left; }
+  .cards { display: flex; gap: 14px; justify-content: center; margin: 16px 0; flex-wrap: wrap; }
+  .card { width: 170px; padding: 14px; border-radius: 10px; background: #1c2130; border: 2px solid #39425a; transition: transform 0.12s; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 4px 0; font-size: 14px; }
+  .card.selected { border-color: var(--accent); background: #22305a; transform: translateY(-4px) scale(1.04); box-shadow: 0 0 24px rgba(70, 240, 240, 0.35); }
+
+  .name-label { color: #fff; font-size: 13px; font-weight: 600; text-shadow: 0 1px 3px #000, 0 0 6px #000; white-space: nowrap; }
+  .pickup-icon { font-size: 18px; font-weight: 800; text-shadow: 0 0 8px currentColor, 0 1px 2px #000; }
+  .lock-label { display: flex; gap: 4px; }
+  .lock-label span { width: 24px; height: 24px; display: grid; place-items: center; font: 700 14px system-ui; border-radius: 4px; background: #333; color: #ddd; border: 2px solid #111; }
+  .lock-label span.done { background: #2ecc71; color: #fff; }
+  .lock-label span.current { background: #f5f5f5; color: #111; border-color: #ff4d4d; }
+  .float-text { display: inline-block; font-weight: 900; -webkit-text-stroke: 1px rgba(0, 0, 0, 0.6); text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7); white-space: nowrap; }
 </style>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js" } }
+</script>
 </head>
 <body>
-<h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Press Space to dash toward the mouse and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot — red ones also cost 3 coins. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Chaos pickups appear now and then: ⇄ swaps places with a random player, $ swaps coins with a random player, 🔒 traps everyone else. Every round starts once all players pressed Space to ready up. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
-<form id="join">
-  <input id="name" placeholder="Your name" maxlength="16" autofocus required>
-  <button>Join</button>
-</form>
-<div id="game">
-  <canvas id="canvas" width="800" height="600"></canvas>
-  <div id="board"><h3>Scores</h3><ul id="scores"></ul></div>
+<div id="stage"></div>
+
+<div id="join-screen">
+  <div class="join-card">
+    <h1>Coin Rush</h1>
+    <p>Grab coins around the wandering goldpot, shove your friends into walls and black holes, and be first to 20 coins. First to 5 rounds wins the match.</p>
+    <form id="join">
+      <input id="name" placeholder="Your name" maxlength="16" autofocus required>
+      <button>Join</button>
+    </form>
+  </div>
 </div>
+
+<aside id="scoreboard" class="panel">
+  <h3>Scores</h3>
+  <ul id="scores"></ul>
+</aside>
+
+<details id="help" class="panel">
+  <summary>How to play</summary>
+  <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Space</kbd> dash toward the mouse (recharges after 3 coins) and ready up between rounds.</p>
+  <p>Coins spill from the goldpot — slam it into the arena edge to break it. Walls cost 3 coins on a hard hit. Black holes teleport you; red ones also cost 3 coins. Traps lock you until you type the shown W/A/S/D combination.</p>
+  <p>Chaos gems: ⇄ swap places, $ swap coins, 🔒 trap everyone else. The round's lowest scorer picks a power-up.</p>
+</details>
+
+<div id="overlay" class="panel" hidden></div>
+
 <script src="/shared.js"></script>
-<script src="/effects.js"></script>
-<script>
-const { CONFIG, POWER_UPS, applyInput, setArena } = window.Shared;
-const INTERPOLATION_DELAY_MS = 50;
-const SNAPSHOT_HISTORY_MS = 1000;
-const STEP_MS = CONFIG.stepSeconds * 1000;
-
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const scoresList = document.getElementById("scores");
-const effects = window.createEffects(ctx);
-const COIN_POP_MS = 220;
-const SPAWNER_POP_MS = 400;
-const coinFirstSeen = new Map();
-let spawnerAppearedAt = 0;
-let lastRenderTime = performance.now();
-let mouse = null;
-const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
-const LOCK_KEYS = ["w", "a", "s", "d"];
-const keys = { up: false, down: false, left: false, right: false };
-let dashRequested = false;
-
-let socket = null;
-let playerId = null;
-let latestState = null;
-let predicted = null;
-let pendingInputs = [];
-let nextSeq = 1;
-let selectedPowerUp = 0;
-let snapshots = [];
-let lastScoresKey = "";
-let accumulator = 0;
-let lastFrameTime = performance.now();
-
-const isMoving = () => keys.up || keys.down || keys.left || keys.right;
-
-const myPlayer = () => latestState && latestState.players.find((player) => player.id === playerId);
-
-const isPicking = () => latestState && latestState.phase === "intermission" && Boolean(myPlayer() && myPlayer().pendingPick);
-
-const handlePickKey = (event) => {
-  const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
-  if (direction === "left" || direction === "up") selectedPowerUp = (selectedPowerUp + POWER_UPS.length - 1) % POWER_UPS.length;
-  else if (direction === "right" || direction === "down") selectedPowerUp = (selectedPowerUp + 1) % POWER_UPS.length;
-  else if (event.code === "Space" && !event.repeat) socket.send(JSON.stringify({ type: "pick", powerUp: POWER_UPS[selectedPowerUp].key }));
-  else return;
-  event.preventDefault();
-};
-
-const setKey = (event, pressed) => {
-  if (pressed && isPicking()) {
-    handlePickKey(event);
-    return;
-  }
-  if (pressed && predicted && predicted.trapped && LOCK_KEYS.includes(event.key.toLowerCase())) {
-    event.preventDefault();
-    if (!event.repeat) socket.send(JSON.stringify({ type: "unlockKey", key: event.key.toLowerCase() }));
-    return;
-  }
-  if (event.code === "Space" && playerId) {
-    event.preventDefault();
-    if (!pressed || event.repeat) return;
-    if (latestState && latestState.phase === "ready") socket.send(JSON.stringify({ type: "ready" }));
-    else dashRequested = true;
-    return;
-  }
-  const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
-  if (!direction || !playerId) return;
-  event.preventDefault();
-  keys[direction] = pressed;
-};
-
-canvas.addEventListener("mousemove", (event) => {
-  const bounds = canvas.getBoundingClientRect();
-  mouse = {
-    x: ((event.clientX - bounds.left) / bounds.width) * canvas.width,
-    y: ((event.clientY - bounds.top) / bounds.height) * canvas.height,
-  };
-});
-
-const mouseAimAngle = () => (mouse ? Math.atan2(mouse.y - predicted.y, mouse.x - predicted.x) : undefined);
-
-addEventListener("keydown", (e) => setKey(e, true));
-addEventListener("keyup", (e) => setKey(e, false));
-addEventListener("blur", () => Object.keys(keys).forEach((key) => (keys[key] = false)));
-
-const reconcile = (state) => {
-  const me = state.players.find((player) => player.id === playerId);
-  if (!me) return;
-  pendingInputs = pendingInputs.filter((input) => input.seq > me.ack);
-  const { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed } = me;
-  predicted = { x, y, dashTicks, dashX, dashY, faceX, faceY, dashCharge, radius, speed };
-  predicted.trapped = me.trapped;
-  if (state.phase === "playing" && !me.trapped) for (const input of pendingInputs) applyInput(predicted, input.keys);
-};
-
-const simulateStep = () => {
-  if (!predicted || latestState.phase !== "playing" || predicted.trapped) {
-    dashRequested = false;
-    return;
-  }
-  if (!isMoving() && !dashRequested && predicted.dashTicks === 0) return;
-  const input = { seq: nextSeq++, keys: { ...keys, dash: dashRequested, aimAngle: mouseAimAngle() } };
-  dashRequested = false;
-  pendingInputs.push(input);
-  applyInput(predicted, input.keys);
-  socket.send(JSON.stringify({ type: "input", ...input }));
-};
-
-const interpolatedPosition = (select, renderTime) => {
-  for (let i = snapshots.length - 1; i > 0; i--) {
-    const older = snapshots[i - 1];
-    if (older.time > renderTime) continue;
-    const newer = snapshots[i];
-    const from = select(older);
-    const to = select(newer);
-    if (!from || !to) return to || from;
-    const t = Math.min((renderTime - older.time) / (newer.time - older.time || 1), 1);
-    return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
-  }
-  return snapshots[0] && select(snapshots[0]);
-};
-
-const drawCircle = (x, y, radius, color) => {
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.fill();
-};
-
-const drawDashCharge = (x, y, radius, charge) => {
-  const ready = charge >= CONFIG.dashCoinCost;
-  ctx.beginPath();
-  ctx.arc(x, y, radius + 6, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * charge) / CONFIG.dashCoinCost);
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = ready ? "#46f0f0" : "rgba(70,240,240,0.4)";
-  ctx.stroke();
-};
-
-const drawAimArrow = (x, y, radius, angle, color) => {
-  const tip = radius + 22;
-  const base = radius + 6;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.beginPath();
-  ctx.moveTo(base, 0);
-  ctx.lineTo(tip - 6, 0);
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = color;
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(tip, 0);
-  ctx.lineTo(tip - 9, -6);
-  ctx.lineTo(tip - 9, 6);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.restore();
-};
-
-const easeOutBack = (t) => 1 + 2.7 * Math.pow(t - 1, 3) + 1.7 * Math.pow(t - 1, 2);
-
-const popScale = (elapsedMs, durationMs) => (elapsedMs >= durationMs ? 1 : Math.max(0, easeOutBack(elapsedMs / durationMs)));
-
-const drawBlackHole = (hole, now) => {
-  const scale = Math.max(0, Math.min(1, (1 - hole.lifeLeft) * 20, hole.lifeLeft * 8));
-  const radius = hole.radius * scale;
-  if (radius <= 0) return;
-  effects.blackHoleSuction(hole.x, hole.y, hole.radius, hole.draining);
-  const tint = hole.draining ? "200,30,30" : "120,40,200";
-  ctx.save();
-  const glow = ctx.createRadialGradient(hole.x, hole.y, radius * 0.3, hole.x, hole.y, radius * 1.6);
-  glow.addColorStop(0, "#000");
-  glow.addColorStop(0.6, `rgba(${tint},0.6)`);
-  glow.addColorStop(1, `rgba(${tint},0)`);
-  drawCircle(hole.x, hole.y, radius * 1.6, glow);
-  drawCircle(hole.x, hole.y, radius * 0.8, "#000");
-  const spin = now / 300;
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = hole.draining ? "#ff4d4d" : "#b47cff";
-  for (let i = 0; i < 3; i++) {
-    ctx.beginPath();
-    ctx.arc(hole.x, hole.y, radius * (0.9 + i * 0.15), spin + (i * Math.PI * 2) / 3, spin + (i * Math.PI * 2) / 3 + Math.PI / 2);
-    ctx.stroke();
-  }
-  ctx.restore();
-};
-
-const coinKey = (coin) => `${Math.round(coin.x)},${Math.round(coin.y)}`;
-
-const drawCoins = (now) => {
-  const visible = new Set();
-  for (const coin of latestState.coins) {
-    const key = coinKey(coin);
-    visible.add(key);
-    if (!coinFirstSeen.has(key)) coinFirstSeen.set(key, now);
-    const scale = popScale(now - coinFirstSeen.get(key), COIN_POP_MS);
-    const shimmer = 1 + 0.08 * Math.sin(now / 180 + coin.x);
-    drawCircle(coin.x, coin.y, CONFIG.coinRadius * scale * shimmer, "gold");
-    drawCircle(coin.x - 2 * scale, coin.y - 2 * scale, CONFIG.coinRadius * 0.35 * scale, "rgba(255,255,255,0.7)");
-  }
-  for (const key of coinFirstSeen.keys()) if (!visible.has(key)) coinFirstSeen.delete(key);
-};
-
-const drawHitFlash = (x, y, radius, amount) => {
-  if (amount <= 0) return;
-  ctx.globalAlpha = amount;
-  drawCircle(x, y, radius + 2, "white");
-  ctx.globalAlpha = 1;
-};
-
-const drawTrap = (trap) => {
-  const spikes = 8;
-  ctx.beginPath();
-  for (let i = 0; i < spikes * 2; i++) {
-    const angle = (i / (spikes * 2)) * Math.PI * 2;
-    const distance = i % 2 ? trap.radius * 0.55 : trap.radius;
-    ctx.lineTo(trap.x + Math.cos(angle) * distance, trap.y + Math.sin(angle) * distance);
-  }
-  ctx.closePath();
-  ctx.fillStyle = "#8b8b8b";
-  ctx.fill();
-  drawCircle(trap.x, trap.y, trap.radius * 0.35, "#c0392b");
-};
-
-const drawLockCombo = (x, y, lock) => {
-  const box = 22;
-  const gap = 4;
-  const left = x - (lock.combo.length * box + (lock.combo.length - 1) * gap) / 2;
-  ctx.font = "bold 14px system-ui";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  lock.combo.forEach((key, index) => {
-    const boxX = left + index * (box + gap);
-    const done = index < lock.progress;
-    const current = index === lock.progress;
-    ctx.fillStyle = done ? "#2ecc71" : current ? "#f5f5f5" : "#333";
-    ctx.fillRect(boxX, y, box, box);
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = current ? "#ff4d4d" : "#111";
-    ctx.strokeRect(boxX, y, box, box);
-    ctx.fillStyle = done ? "#fff" : current ? "#111" : "#ddd";
-    ctx.fillText(key.toUpperCase(), boxX + box / 2, y + box / 2 + 1);
-  });
-  ctx.textBaseline = "alphabetic";
-};
-
-const drawTrappedCage = (x, y, radius, lock) => {
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#c0392b";
-  for (let i = 0; i < 4; i++) {
-    const angle = (i / 4) * Math.PI * 2 + Math.PI / 4;
-    ctx.beginPath();
-    ctx.moveTo(x + Math.cos(angle) * (radius - 4), y + Math.sin(angle) * (radius - 4));
-    ctx.lineTo(x + Math.cos(angle) * (radius + 8), y + Math.sin(angle) * (radius + 8));
-    ctx.stroke();
-  }
-  drawLockCombo(x, y - radius - 48, lock);
-};
-
-const CHAOS_STYLES = {
-  swapPosition: { color: "#46f0f0", icon: "⇄" },
-  swapCoins: { color: "#ffd700", icon: "$" },
-  lockdown: { color: "#ff4d4d", icon: "🔒" },
-};
-
-const drawChaosPickup = (pickup, now) => {
-  const style = CHAOS_STYLES[pickup.kind];
-  const scale = Math.max(0, Math.min(1, (1 - pickup.lifeLeft) * 25, pickup.lifeLeft * 10));
-  if (scale <= 0) return;
-  const blink = pickup.lifeLeft < 0.2 && Math.floor(now / 120) % 2 ? 0.4 : 1;
-  const pulse = 1 + 0.12 * Math.sin(now / 150);
-  const radius = pickup.radius * scale * pulse;
-  ctx.save();
-  ctx.globalAlpha = blink;
-  ctx.translate(pickup.x, pickup.y);
-  const glow = ctx.createRadialGradient(0, 0, radius * 0.4, 0, 0, radius * 2.2);
-  glow.addColorStop(0, style.color);
-  glow.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.globalAlpha = blink * 0.35;
-  drawCircle(0, 0, radius * 2.2, glow);
-  ctx.globalAlpha = blink;
-  ctx.rotate(now / 400);
-  ctx.beginPath();
-  for (let i = 0; i < 4; i++) {
-    const angle = (i / 4) * Math.PI * 2;
-    ctx.lineTo(Math.cos(angle) * radius * 1.3, Math.sin(angle) * radius * 1.3);
-  }
-  ctx.closePath();
-  ctx.fillStyle = "#111";
-  ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = style.color;
-  ctx.stroke();
-  ctx.rotate(-now / 400);
-  ctx.fillStyle = style.color;
-  ctx.font = `bold ${Math.round(16 * scale)}px system-ui`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(style.icon, 0, 1);
-  ctx.textBaseline = "alphabetic";
-  ctx.restore();
-};
-
-const drawSpawner = (x, y, scale) => {
-  drawCircle(x, y, CONFIG.spawnerRadius * scale, "#5a4510");
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = "gold";
-  ctx.stroke();
-  ctx.fillStyle = "gold";
-  ctx.font = `bold ${Math.round(24 * scale)}px system-ui`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("$", x, y);
-  ctx.textBaseline = "alphabetic";
-};
-
-const drawArena = () => {
-  ctx.fillStyle = "#0b0b0b";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.beginPath();
-  latestState.arena.boundary.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-  ctx.closePath();
-  ctx.fillStyle = "#1d1d1d";
-  ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "#555";
-  ctx.stroke();
-  ctx.fillStyle = "#555";
-  for (const wall of latestState.arena.walls) ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
-};
-
-const drawOverlayTitle = (text, y) => {
-  ctx.fillStyle = "rgba(0,0,0,0.7)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "white";
-  ctx.font = "bold 40px system-ui";
-  ctx.textAlign = "center";
-  ctx.fillText(text, canvas.width / 2, y);
-};
-
-const drawPowerUpCards = () => {
-  const cardWidth = 200;
-  const cardHeight = 110;
-  const gap = 24;
-  const left = (canvas.width - (cardWidth * POWER_UPS.length + gap * (POWER_UPS.length - 1))) / 2;
-  const top = 250;
-  const owned = myPlayer().powerUps;
-  POWER_UPS.forEach((powerUp, index) => {
-    const x = left + index * (cardWidth + gap);
-    const selected = index === selectedPowerUp;
-    ctx.fillStyle = selected ? "#2b3f8a" : "#2a2a2a";
-    ctx.fillRect(x, top, cardWidth, cardHeight);
-    ctx.lineWidth = selected ? 4 : 2;
-    ctx.strokeStyle = selected ? "#46f0f0" : "#555";
-    ctx.strokeRect(x, top, cardWidth, cardHeight);
-    ctx.fillStyle = "white";
-    ctx.font = "bold 22px system-ui";
-    ctx.fillText(powerUp.label, x + cardWidth / 2, top + 38);
-    ctx.font = "16px system-ui";
-    ctx.fillText(powerUp.description, x + cardWidth / 2, top + 66);
-    ctx.fillStyle = "#aaa";
-    ctx.fillText(`owned: ${owned[powerUp.key]}`, x + cardWidth / 2, top + 92);
-  });
-  ctx.fillStyle = "#ccc";
-  ctx.font = "18px system-ui";
-  ctx.fillText(`A/D to choose · Space to confirm · ${latestState.pickSecondsLeft}s`, canvas.width / 2, top + cardHeight + 44);
-};
-
-const drawIntermission = () => {
-  drawOverlayTitle(`${latestState.roundWinner} wins the round!`, 160);
-  if (isPicking()) {
-    ctx.font = "20px system-ui";
-    ctx.fillText("You had the fewest coins — pick a power-up", canvas.width / 2, 210);
-    drawPowerUpCards();
-    return;
-  }
-  const waitingFor = latestState.players.filter((player) => player.pendingPick).map((player) => player.name);
-  ctx.font = "20px system-ui";
-  ctx.fillText(
-    waitingFor.length ? `Waiting for ${waitingFor.join(", ")} to pick a power-up… ${latestState.pickSecondsLeft}s` : "Next round starting…",
-    canvas.width / 2,
-    300,
-  );
-};
-
-const drawReadyCheck = () => {
-  const players = latestState.players;
-  const readyCount = players.filter((player) => player.ready).length;
-  const me = myPlayer();
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.textAlign = "center";
-  ctx.fillStyle = "white";
-  ctx.font = "bold 36px system-ui";
-  ctx.fillText(me && me.ready ? "Waiting for others…" : "Press SPACE when ready", canvas.width / 2, 170);
-  ctx.font = "20px system-ui";
-  ctx.fillStyle = "#ccc";
-  ctx.fillText(readyCount + " / " + players.length + " ready", canvas.width / 2, 210);
-  const rowHeight = 30;
-  const top = 260;
-  players.forEach((player, index) => {
-    const y = top + index * rowHeight;
-    ctx.font = "bold 20px system-ui";
-    ctx.textAlign = "right";
-    ctx.fillStyle = player.color;
-    ctx.fillText(player.name, canvas.width / 2 - 16, y);
-    ctx.textAlign = "left";
-    ctx.fillStyle = player.ready ? "#2ecc71" : "#888";
-    ctx.fillText(player.ready ? "✓ ready" : "… not ready", canvas.width / 2 + 16, y);
-  });
-  ctx.textAlign = "center";
-};
-
-const drawMatchOver = () => {
-  drawOverlayTitle(`${latestState.matchWinner} wins the match!`, canvas.height / 2);
-  ctx.font = "20px system-ui";
-  ctx.fillText("New match starting soon…", canvas.width / 2, canvas.height / 2 + 50);
-};
-
-const render = (now) => {
-  const dt = Math.min((now - lastRenderTime) / 1000, 0.1);
-  lastRenderTime = now;
-  effects.update(dt);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const shake = effects.shakeOffset();
-  ctx.save();
-  ctx.translate(shake.x, shake.y);
-  drawArena();
-  for (const hole of latestState.blackHoles) drawBlackHole(hole, now);
-  for (const trap of latestState.traps) drawTrap(trap);
-  for (const pickup of latestState.chaosPickups) drawChaosPickup(pickup, now);
-  if (latestState.spawner) {
-    const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
-    drawSpawner(spawnerPosition.x, spawnerPosition.y, popScale(now - spawnerAppearedAt, SPAWNER_POP_MS));
-  }
-  drawCoins(now);
-  effects.drawGhosts();
-  for (const player of latestState.players) {
-    const isMe = player.id === playerId;
-    const { x, y } = (isMe ? predicted : interpolatedPosition((snapshot) => snapshot.players.get(player.id), now - INTERPOLATION_DELAY_MS)) || player;
-    if ((isMe ? predicted : player).dashTicks > 0) effects.dashTrail(x, y, player.radius, player.color);
-    ctx.globalAlpha = player.hurt && Math.floor(now / 100) % 2 ? 0.3 : 1;
-    drawCircle(x, y, player.radius, player.color);
-    ctx.globalAlpha = 1;
-    drawHitFlash(x, y, player.radius, effects.flashAmount(player.id, now));
-    if (isMe) {
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "white";
-      ctx.stroke();
-      drawDashCharge(x, y, player.radius, predicted.dashCharge);
-    }
-    if (player.trapped) drawTrappedCage(x, y, player.radius, player.lock);
-    if (isMe && mouse && predicted.dashCharge >= CONFIG.dashCoinCost) drawAimArrow(x, y, player.radius, mouseAimAngle(), "white");
-    ctx.fillStyle = "#eee";
-    ctx.font = "14px system-ui";
-    ctx.textAlign = "center";
-    ctx.fillText(player.name, x, y - player.radius - 6);
-  }
-  effects.draw();
-  ctx.restore();
-  if (latestState.phase === "ready") drawReadyCheck();
-  if (latestState.phase === "intermission") drawIntermission();
-  if (latestState.phase === "matchOver") drawMatchOver();
-};
-
-const powerUpSummary = (powerUps) =>
-  POWER_UPS.filter(({ key }) => powerUps[key] > 0)
-    .map(({ key, label }) => `${label} ×${powerUps[key]}`)
-    .join(", ");
-
-const renderScores = (state) => {
-  const ranked = [...state.players].sort((a, b) => b.roundWins - a.roundWins || b.score - a.score);
-  const scoresKey = JSON.stringify(ranked.map(({ id, score, roundWins, powerUps }) => [id, score, roundWins, powerUps]));
-  if (scoresKey === lastScoresKey) return;
-  lastScoresKey = scoresKey;
-  scoresList.innerHTML = "";
-  for (const player of ranked) {
-    const item = document.createElement("li");
-    item.textContent = `${player.name}: ${player.score} / ${CONFIG.winScore} · rounds ${player.roundWins} / ${CONFIG.roundsToWin}`;
-    item.style.color = player.color;
-    const summary = powerUpSummary(player.powerUps);
-    if (summary) {
-      const detail = document.createElement("div");
-      detail.textContent = summary;
-      detail.style.fontSize = "13px";
-      detail.style.color = "#aaa";
-      item.appendChild(detail);
-    }
-    scoresList.appendChild(item);
-  }
-};
-
-const receiveState = (state) => {
-  const now = performance.now();
-  if (state.spawner && !(latestState && latestState.spawner)) spawnerAppearedAt = now;
-  latestState = state;
-  setArena(state.arena);
-  for (const event of state.events) effects.handleEvent(event, playerId, now);
-  snapshots.push({ time: now, spawner: state.spawner, players: new Map(state.players.map((player) => [player.id, player])) });
-  snapshots = snapshots.filter((snapshot) => now - snapshot.time < SNAPSHOT_HISTORY_MS);
-  reconcile(state);
-  renderScores(state);
-};
-
-const frame = (now) => {
-  accumulator += Math.min(now - lastFrameTime, 250);
-  lastFrameTime = now;
-  while (accumulator >= STEP_MS) {
-    if (latestState) simulateStep();
-    accumulator -= STEP_MS;
-  }
-  if (latestState) render(now);
-  requestAnimationFrame(frame);
-};
-
-document.getElementById("join").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const name = document.getElementById("name").value;
-  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`);
-  socket.onopen = () => socket.send(JSON.stringify({ type: "join", name }));
-  socket.onmessage = (message) => {
-    const data = JSON.parse(message.data);
-    if (data.type === "welcome") {
-      playerId = data.id;
-      document.getElementById("join").style.display = "none";
-      document.getElementById("game").style.display = "flex";
-      requestAnimationFrame(frame);
-    } else if (data.type === "state") {
-      receiveState(data);
-    }
-  };
-  socket.onclose = () => alert("Disconnected from server. Reload to rejoin.");
-});
-</script>
+<script type="module" src="/client/main.js"></script>
 </body>
 </html>
