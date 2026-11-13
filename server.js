@@ -22,11 +22,18 @@ const SPAWNER_DASH_PUSH = 14;
 const SPAWNER_BREAK_SPEED = 2.5;
 const SPAWNER_RESPAWN_MS = 3000;
 const BLACK_HOLE_RADIUS = 22;
+const DRAINING_HOLE_CHANCE = 0.4;
+const DRAINING_HOLE_COIN_LOSS = 3;
 const MAX_BLACK_HOLES = 2;
 const BLACK_HOLE_LIFETIME_MS = 8000;
 const BLACK_HOLE_SPAWN_MIN_MS = 3000;
 const BLACK_HOLE_SPAWN_MAX_MS = 7000;
-const BONUS_COINS = 5;
+const CHAOS_KINDS = ["swapPosition", "swapCoins", "lockdown"];
+const CHAOS_RADIUS = 14;
+const MAX_CHAOS_PICKUPS = 2;
+const CHAOS_LIFETIME_MS = 12000;
+const CHAOS_SPAWN_MIN_MS = 6000;
+const CHAOS_SPAWN_MAX_MS = 12000;
 const TRAP_RADIUS = 10;
 const MAX_TRAPS = 6;
 const TRAP_DROP_MIN_MS = 5000;
@@ -62,6 +69,8 @@ let spawnerRespawnAt = 0;
 let blackHoles = [];
 let nextBlackHoleAt = 0;
 let traps = [];
+let chaosPickups = [];
+let nextChaosAt = 0;
 let events = [];
 let nextTrapAt = 0;
 let phase = "playing";
@@ -298,13 +307,13 @@ const scheduleNextBlackHole = () => {
 
 const updateBlackHoles = () => {
   const now = Date.now();
-  for (const hole of blackHoles) if (hole.expiresAt <= now) emit("holeClose", { x: hole.x, y: hole.y });
+  for (const hole of blackHoles) if (hole.expiresAt <= now) emit("holeClose", { x: hole.x, y: hole.y, draining: hole.draining });
   blackHoles = blackHoles.filter((hole) => hole.expiresAt > now);
   if (now < nextBlackHoleAt) return;
   if (blackHoles.length < MAX_BLACK_HOLES) {
-    const hole = { ...randomPosition(BLACK_HOLE_RADIUS), expiresAt: now + BLACK_HOLE_LIFETIME_MS };
+    const hole = { ...randomPosition(BLACK_HOLE_RADIUS), expiresAt: now + BLACK_HOLE_LIFETIME_MS, draining: Math.random() < DRAINING_HOLE_CHANCE };
     blackHoles.push(hole);
-    emit("holeOpen", { x: hole.x, y: hole.y });
+    emit("holeOpen", { x: hole.x, y: hole.y, draining: hole.draining });
   }
   scheduleNextBlackHole();
 };
@@ -346,6 +355,73 @@ const enterLockKey = (player, key) => {
   emit("unlockSuccess", { x: player.x, y: player.y, radius: player.radius, color: player.color, playerId: player.id });
 };
 
+const scheduleNextChaos = () => {
+  nextChaosAt = Date.now() + randomBetween(CHAOS_SPAWN_MIN_MS, CHAOS_SPAWN_MAX_MS);
+};
+
+const updateChaosPickups = () => {
+  const now = Date.now();
+  for (const pickup of chaosPickups) if (pickup.expiresAt <= now) emit("chaosExpire", { x: pickup.x, y: pickup.y, kind: pickup.kind });
+  chaosPickups = chaosPickups.filter((pickup) => pickup.expiresAt > now);
+  if (now < nextChaosAt) return;
+  if (chaosPickups.length < MAX_CHAOS_PICKUPS) {
+    const pickup = {
+      ...randomPosition(CHAOS_RADIUS),
+      kind: CHAOS_KINDS[Math.floor(Math.random() * CHAOS_KINDS.length)],
+      expiresAt: now + CHAOS_LIFETIME_MS,
+    };
+    chaosPickups.push(pickup);
+    emit("chaosSpawn", { x: pickup.x, y: pickup.y, kind: pickup.kind });
+  }
+  scheduleNextChaos();
+};
+
+const randomOtherPlayer = (player) => {
+  const others = [...players.values()].filter((other) => other !== player);
+  return others.length ? others[Math.floor(Math.random() * others.length)] : null;
+};
+
+const swapPositions = (player, other) => {
+  const from = { x: player.x, y: player.y };
+  Object.assign(player, { x: other.x, y: other.y, dashTicks: 0, knockX: 0, knockY: 0 });
+  Object.assign(other, { x: from.x, y: from.y, dashTicks: 0, knockX: 0, knockY: 0 });
+  emit("chaosSwapPosition", { ax: player.x, ay: player.y, bx: other.x, by: other.y, aColor: player.color, bColor: other.color, aId: player.id, bId: other.id });
+};
+
+const swapCoins = (player, other) => {
+  const delta = other.score - player.score;
+  [player.score, other.score] = [other.score, player.score];
+  emit("chaosSwapCoins", { ax: player.x, ay: player.y, bx: other.x, by: other.y, aDelta: delta, bDelta: -delta, aId: player.id, bId: other.id });
+};
+
+const lockdown = (player) => {
+  for (const other of players.values()) {
+    if (other === player || isTrapped(other)) continue;
+    Object.assign(other, { lock: randomLock(), dashTicks: 0 });
+    emit("trapSnap", { x: other.x, y: other.y, radius: other.radius, playerId: other.id });
+  }
+};
+
+const CHAOS_EFFECTS = {
+  swapPosition: (player) => {
+    const other = randomOtherPlayer(player);
+    if (other) swapPositions(player, other);
+  },
+  swapCoins: (player) => {
+    const other = randomOtherPlayer(player);
+    if (other) swapCoins(player, other);
+  },
+  lockdown,
+};
+
+const collectChaos = (player) => {
+  const pickup = chaosPickups.find((candidate) => Math.hypot(candidate.x - player.x, candidate.y - player.y) < player.radius + CHAOS_RADIUS);
+  if (!pickup) return;
+  chaosPickups = chaosPickups.filter((candidate) => candidate !== pickup);
+  emit("chaosPickup", { x: pickup.x, y: pickup.y, kind: pickup.kind, playerId: player.id });
+  CHAOS_EFFECTS[pickup.kind](player);
+};
+
 const stepOnTraps = (player) => {
   if (isTrapped(player)) return;
   const trap = traps.find((candidate) => Math.hypot(candidate.x - player.x, candidate.y - player.y) < player.radius + TRAP_RADIUS);
@@ -356,15 +432,20 @@ const stepOnTraps = (player) => {
 };
 
 const fallIntoBlackHoles = (player) => {
-  if (!blackHoles.some((hole) => Math.hypot(hole.x - player.x, hole.y - player.y) < BLACK_HOLE_RADIUS)) return;
+  const hole = blackHoles.find((candidate) => Math.hypot(candidate.x - player.x, candidate.y - player.y) < BLACK_HOLE_RADIUS);
+  if (!hole) return;
   const from = { x: player.x, y: player.y };
+  const lost = hole.draining ? Math.min(player.score, DRAINING_HOLE_COIN_LOSS) : 0;
+  player.score -= lost;
   Object.assign(player, randomPosition(player.radius), { dashTicks: 0, knockX: 0, knockY: 0 });
-  emit("teleport", { fromX: from.x, fromY: from.y, toX: player.x, toY: player.y, radius: player.radius, color: player.color, playerId: player.id });
+  emit("teleport", { fromX: from.x, fromY: from.y, toX: player.x, toY: player.y, radius: player.radius, color: player.color, playerId: player.id, draining: hole.draining, lost });
 };
 
 const startRound = () => {
   blackHoles = [];
   traps = [];
+  chaosPickups = [];
+  scheduleNextChaos();
   scheduleNextTrap();
   scheduleNextBlackHole();
   arena = generateArena();
@@ -421,11 +502,6 @@ const updatePhase = () => {
   } else if (phase === "matchOver" && now >= phaseEndsAt) {
     startMatch();
   }
-};
-
-const awardBonusCoins = (player) => {
-  emit("bonus", { x: player.x, y: player.y, amount: BONUS_COINS, playerId: player.id });
-  awardCoins(player, BONUS_COINS);
 };
 
 const awardCoins = (player, count) => {
@@ -521,10 +597,18 @@ const broadcast = () => {
     pickSecondsLeft: phase === "intermission" ? Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000)) : 0,
     arena,
     traps: traps.map(({ x, y }) => ({ x, y, radius: TRAP_RADIUS })),
+    chaosPickups: chaosPickups.map((pickup) => ({
+      x: pickup.x,
+      y: pickup.y,
+      kind: pickup.kind,
+      radius: CHAOS_RADIUS,
+      lifeLeft: Math.max(0, (pickup.expiresAt - Date.now()) / CHAOS_LIFETIME_MS),
+    })),
     blackHoles: blackHoles.map((hole) => ({
       x: hole.x,
       y: hole.y,
       radius: BLACK_HOLE_RADIUS,
+      draining: hole.draining,
       lifeLeft: Math.max(0, (hole.expiresAt - Date.now()) / BLACK_HOLE_LIFETIME_MS),
     })),
     spawner: spawner && { x: spawner.x, y: spawner.y },
@@ -570,9 +654,11 @@ const tick = () => {
   if (phase === "playing") {
     updateBlackHoles();
     dropTrapWhenDue();
+    updateChaosPickups();
     for (const player of players.values()) {
       fallIntoBlackHoles(player);
       stepOnTraps(player);
+      collectChaos(player);
     }
   }
   broadcast();
@@ -634,8 +720,6 @@ new WebSocketServer({ server }).on("connection", (socket) => {
       }
     } else if (message.type === "unlockKey" && player && phase === "playing") {
       enterLockKey(player, String(message.key));
-    } else if (message.type === "bonusCoins" && player && phase === "playing") {
-      awardBonusCoins(player);
     } else if (message.type === "pick" && player && phase === "intermission" && player.pendingPick) {
       if (POWER_UPS.some(({ key }) => key === message.powerUp)) grantPowerUp(player, message.powerUp);
     }

@@ -2,8 +2,15 @@
   const MAX_PARTICLES = 900;
   const GOLD = ["#ffd700", "#ffec80", "#e6a800"];
   const PURPLE = ["#b47cff", "#7a3cff", "#e0c8ff"];
+  const BLOOD = ["#ff3b3b", "#a80000", "#ffb3b3"];
+  const holeColors = (draining) => (draining ? BLOOD : PURPLE);
   const RED = ["#ff4d4d", "#c0392b", "#ffb3b3"];
   const DUST = ["#999", "#bbb", "#666"];
+  const CHAOS = {
+    swapPosition: { color: "#46f0f0", label: "SWAP!" },
+    swapCoins: { color: "#ffd700", label: "COIN SWAP!" },
+    lockdown: { color: "#ff4d4d", label: "LOCKDOWN!" },
+  };
 
   const random = (min, max) => min + Math.random() * (max - min);
   const fade = (item) => Math.max(0, item.life / item.maxLife);
@@ -13,6 +20,7 @@
     let rings = [];
     let texts = [];
     let ghosts = [];
+    let beams = [];
     let shake = 0;
     const flashes = new Map();
 
@@ -40,6 +48,8 @@
 
     const ring = (x, y, color, fromRadius, toRadius, life, width = 3) =>
       rings.push({ x, y, color, fromRadius, toRadius, life, maxLife: life, width });
+
+    const beam = (ax, ay, bx, by, color) => beams.push({ ax, ay, bx, by, color, life: 0.4, maxLife: 0.4 });
 
     const floatText = (x, y, text, color, size = 18) => texts.push({ x, y, text, color, size, life: 0.9, maxLife: 0.9 });
 
@@ -73,10 +83,37 @@
         ring(event.x, event.y, "#fff3a0", 18, 2, 0.3, 2);
         burst({ x: event.x, y: event.y, count: 5, colors: ["#fff3a0"], speed: 90, life: 0.35, size: 2 });
       },
-      bonus: (event) => {
-        burst({ x: event.x, y: event.y, count: 30, colors: GOLD, speed: 300, life: 0.7, size: 4, gravity: 300 });
-        ring(event.x, event.y, "#ffd700", 10, 60, 0.4, 3);
-        floatText(event.x, event.y - 30, `+${event.amount}`, "#ffd700", 26);
+      chaosSpawn: (event) => {
+        const style = CHAOS[event.kind];
+        ring(event.x, event.y, style.color, 50, 14, 0.4, 3);
+        burst({ x: event.x, y: event.y, count: 14, colors: [style.color, "#fff"], speed: 140, life: 0.5, size: 3, inward: true });
+      },
+      chaosExpire: (event) => {
+        burst({ x: event.x, y: event.y, count: 12, colors: [CHAOS[event.kind].color, "#555"], speed: 120, life: 0.4, size: 3 });
+      },
+      chaosPickup: (event, myId) => {
+        const style = CHAOS[event.kind];
+        burst({ x: event.x, y: event.y, count: 30, colors: [style.color, "#fff"], speed: 320, life: 0.6, size: 4 });
+        ring(event.x, event.y, style.color, 10, 80, 0.45, 4);
+        floatText(event.x, event.y - 30, style.label, style.color, 24);
+        addShake(event.playerId === myId ? 6 : 3);
+      },
+      chaosSwapPosition: (event, myId, now) => {
+        for (const [x, y, color, id] of [[event.ax, event.ay, event.aColor, event.aId], [event.bx, event.by, event.bColor, event.bId]]) {
+          ring(x, y, "#46f0f0", 50, 10, 0.4, 3);
+          burst({ x, y, count: 20, colors: ["#46f0f0", color, "#fff"], speed: 220, life: 0.5, size: 4 });
+          flash(id, now, 250);
+        }
+        beam(event.ax, event.ay, event.bx, event.by, "#46f0f0");
+        if (event.aId === myId || event.bId === myId) addShake(6);
+      },
+      chaosSwapCoins: (event, myId) => {
+        for (const [x, y, delta, id] of [[event.ax, event.ay, event.aDelta, event.aId], [event.bx, event.by, event.bDelta, event.bId]]) {
+          floatText(x, y - 34, delta >= 0 ? `+${delta}` : `${delta}`, delta >= 0 ? "#ffd700" : "#ff4d4d", id === myId ? 26 : 20);
+          burst({ x, y, count: 18, colors: GOLD, speed: 220, life: 0.5, size: 4 });
+        }
+        beam(event.ax, event.ay, event.bx, event.by, "#ffd700");
+        if (event.aId === myId || event.bId === myId) addShake(5);
       },
       wallHit: (event, myId) => {
         burst({ x: event.x, y: event.y, count: 16, colors: DUST, speed: 260, life: 0.5, size: 4 });
@@ -94,17 +131,18 @@
         burst({ x: event.x, y: event.y, count: 20, colors: GOLD, speed: 160, life: 0.5, size: 3, inward: true });
       },
       holeOpen: (event) => {
-        ring(event.x, event.y, "#b47cff", 70, 10, 0.5, 3);
-        burst({ x: event.x, y: event.y, count: 20, colors: PURPLE, speed: 140, life: 0.6, size: 3, inward: true });
+        ring(event.x, event.y, holeColors(event.draining)[0], 70, 10, 0.5, 3);
+        burst({ x: event.x, y: event.y, count: 20, colors: holeColors(event.draining), speed: 140, life: 0.6, size: 3, inward: true });
       },
       holeClose: (event) => {
-        burst({ x: event.x, y: event.y, count: 24, colors: PURPLE, speed: 240, life: 0.5, size: 3 });
-        ring(event.x, event.y, "#b47cff", 5, 50, 0.35, 3);
+        burst({ x: event.x, y: event.y, count: 24, colors: holeColors(event.draining), speed: 240, life: 0.5, size: 3 });
+        ring(event.x, event.y, holeColors(event.draining)[0], 5, 50, 0.35, 3);
       },
       teleport: (event, myId, now) => {
-        burst({ x: event.fromX, y: event.fromY, count: 24, colors: [...PURPLE, event.color], speed: 160, life: 0.5, size: 4, inward: true });
+        burst({ x: event.fromX, y: event.fromY, count: 24, colors: [...holeColors(event.draining), event.color], speed: 160, life: 0.5, size: 4, inward: true });
+        if (event.lost) floatText(event.toX, event.toY - event.radius - 24, `-${event.lost}`, "#ff4d4d", 24);
         ring(event.toX, event.toY, event.color, 4, event.radius * 3, 0.4, 4);
-        burst({ x: event.toX, y: event.toY, count: 20, colors: [...PURPLE, event.color], speed: 260, life: 0.5, size: 4 });
+        burst({ x: event.toX, y: event.toY, count: 20, colors: [...holeColors(event.draining), event.color], speed: 260, life: 0.5, size: 4 });
         flash(event.playerId, now, 250);
         if (event.playerId === myId) addShake(5);
       },
@@ -142,7 +180,8 @@
 
     const dashTrail = (x, y, radius, color) => ghosts.push({ x, y, radius, color, life: 0.2, maxLife: 0.2 });
 
-    const blackHoleSuction = (x, y, radius) => {
+    const blackHoleSuction = (x, y, radius, draining) => {
+      const colors = holeColors(draining);
       if (Math.random() > 0.35 || particles.length >= MAX_PARTICLES) return;
       const angle = random(0, Math.PI * 2);
       const distance = radius * random(1.8, 2.6);
@@ -155,7 +194,7 @@
         life,
         maxLife: life,
         size: random(1.5, 3),
-        color: PURPLE[Math.floor(Math.random() * PURPLE.length)],
+        color: colors[Math.floor(Math.random() * colors.length)],
         drag: 1,
         gravity: 0,
       });
@@ -172,7 +211,8 @@
         particle.y += particle.vy * dt;
       }
       particles = particles.filter((particle) => particle.life > 0);
-      for (const item of [...rings, ...texts, ...ghosts]) item.life -= dt;
+      for (const item of [...rings, ...texts, ...ghosts, ...beams]) item.life -= dt;
+      beams = beams.filter((item) => item.life > 0);
       rings = rings.filter((item) => item.life > 0);
       texts = texts.filter((item) => item.life > 0);
       ghosts = ghosts.filter((item) => item.life > 0);
@@ -200,6 +240,15 @@
     };
 
     const draw = () => {
+      for (const item of beams) {
+        ctx.globalAlpha = fade(item);
+        ctx.beginPath();
+        ctx.moveTo(item.ax, item.ay);
+        ctx.lineTo(item.bx, item.by);
+        ctx.lineWidth = 2 + 6 * fade(item);
+        ctx.strokeStyle = item.color;
+        ctx.stroke();
+      }
       for (const particle of particles) {
         ctx.globalAlpha = fade(particle);
         ctx.fillStyle = particle.color;

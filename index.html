@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Press Space to dash toward the mouse and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Press Space to dash toward the mouse and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot — red ones also cost 3 coins. The goldpot drops traps — type the shown W/A/S/D combination in order to break free (a mistake restarts it). Chaos pickups appear now and then: ⇄ swaps places with a random player, $ swaps coins with a random player, 🔒 traps everyone else. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -79,11 +79,6 @@ const handlePickKey = (event) => {
 };
 
 const setKey = (event, pressed) => {
-  if (pressed && event.key.toLowerCase() === "ä" && playerId) {
-    event.preventDefault();
-    if (!event.repeat) socket.send(JSON.stringify({ type: "bonusCoins" }));
-    return;
-  }
   if (pressed && isPicking()) {
     handlePickKey(event);
     return;
@@ -201,17 +196,18 @@ const drawBlackHole = (hole, now) => {
   const scale = Math.max(0, Math.min(1, (1 - hole.lifeLeft) * 20, hole.lifeLeft * 8));
   const radius = hole.radius * scale;
   if (radius <= 0) return;
-  effects.blackHoleSuction(hole.x, hole.y, hole.radius);
+  effects.blackHoleSuction(hole.x, hole.y, hole.radius, hole.draining);
+  const tint = hole.draining ? "200,30,30" : "120,40,200";
   ctx.save();
   const glow = ctx.createRadialGradient(hole.x, hole.y, radius * 0.3, hole.x, hole.y, radius * 1.6);
   glow.addColorStop(0, "#000");
-  glow.addColorStop(0.6, "rgba(120,40,200,0.6)");
-  glow.addColorStop(1, "rgba(120,40,200,0)");
+  glow.addColorStop(0.6, `rgba(${tint},0.6)`);
+  glow.addColorStop(1, `rgba(${tint},0)`);
   drawCircle(hole.x, hole.y, radius * 1.6, glow);
   drawCircle(hole.x, hole.y, radius * 0.8, "#000");
   const spin = now / 300;
   ctx.lineWidth = 2;
-  ctx.strokeStyle = "#b47cff";
+  ctx.strokeStyle = hole.draining ? "#ff4d4d" : "#b47cff";
   for (let i = 0; i < 3; i++) {
     ctx.beginPath();
     ctx.arc(hole.x, hole.y, radius * (0.9 + i * 0.15), spin + (i * Math.PI * 2) / 3, spin + (i * Math.PI * 2) / 3 + Math.PI / 2);
@@ -290,6 +286,50 @@ const drawTrappedCage = (x, y, radius, lock) => {
     ctx.stroke();
   }
   drawLockCombo(x, y - radius - 48, lock);
+};
+
+const CHAOS_STYLES = {
+  swapPosition: { color: "#46f0f0", icon: "⇄" },
+  swapCoins: { color: "#ffd700", icon: "$" },
+  lockdown: { color: "#ff4d4d", icon: "🔒" },
+};
+
+const drawChaosPickup = (pickup, now) => {
+  const style = CHAOS_STYLES[pickup.kind];
+  const scale = Math.max(0, Math.min(1, (1 - pickup.lifeLeft) * 25, pickup.lifeLeft * 10));
+  if (scale <= 0) return;
+  const blink = pickup.lifeLeft < 0.2 && Math.floor(now / 120) % 2 ? 0.4 : 1;
+  const pulse = 1 + 0.12 * Math.sin(now / 150);
+  const radius = pickup.radius * scale * pulse;
+  ctx.save();
+  ctx.globalAlpha = blink;
+  ctx.translate(pickup.x, pickup.y);
+  const glow = ctx.createRadialGradient(0, 0, radius * 0.4, 0, 0, radius * 2.2);
+  glow.addColorStop(0, style.color);
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.globalAlpha = blink * 0.35;
+  drawCircle(0, 0, radius * 2.2, glow);
+  ctx.globalAlpha = blink;
+  ctx.rotate(now / 400);
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2;
+    ctx.lineTo(Math.cos(angle) * radius * 1.3, Math.sin(angle) * radius * 1.3);
+  }
+  ctx.closePath();
+  ctx.fillStyle = "#111";
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = style.color;
+  ctx.stroke();
+  ctx.rotate(-now / 400);
+  ctx.fillStyle = style.color;
+  ctx.font = `bold ${Math.round(16 * scale)}px system-ui`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(style.icon, 0, 1);
+  ctx.textBaseline = "alphabetic";
+  ctx.restore();
 };
 
 const drawSpawner = (x, y, scale) => {
@@ -391,6 +431,7 @@ const render = (now) => {
   drawArena();
   for (const hole of latestState.blackHoles) drawBlackHole(hole, now);
   for (const trap of latestState.traps) drawTrap(trap);
+  for (const pickup of latestState.chaosPickups) drawChaosPickup(pickup, now);
   if (latestState.spawner) {
     const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
     drawSpawner(spawnerPosition.x, spawnerPosition.y, popScale(now - spawnerAppearedAt, SPAWNER_POP_MS));
