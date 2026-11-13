@@ -590,6 +590,7 @@ const sanitizeKeys = (keys = {}) => ({
   left: Boolean(keys.left),
   right: Boolean(keys.right),
   aim: Boolean(keys.aim),
+  aimAngle: Number.isFinite(keys.aimAngle) ? keys.aimAngle : undefined,
 });
 
 const server = http.createServer((req, res) => {

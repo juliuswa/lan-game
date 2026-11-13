@@ -13,7 +13,6 @@
     dashTicks: 8,
     dashDiameters: 3,
     dashCoinCost: 3,
-    aimTurnSpeed: 4,
     aimSpeedFactor: 0.4,
     hardHitThreshold: 0.5,
   };
@@ -188,9 +187,7 @@
     state.faceY = state.dashY;
   };
 
-  const aim = (state, keys) => {
-    const turn = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-    state.aimAngle += turn * CONFIG.aimTurnSpeed * CONFIG.stepSeconds;
+  const aim = (state) => {
     const distance = state.speed * CONFIG.aimSpeedFactor * CONFIG.stepSeconds;
     moveBy(state, state.driftX * distance, state.driftY * distance);
   };
@@ -200,8 +197,9 @@
     const dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
     const length = Math.hypot(dx, dy) || 1;
     if (!state.aiming && keys.aim && canDash(state)) startAiming(state, dx, dy);
+    if (state.aiming && Number.isFinite(keys.aimAngle)) state.aimAngle = keys.aimAngle;
     if (state.aiming && keys.aim) {
-      aim(state, keys);
+      aim(state);
       return false;
     }
     if (state.aiming) releaseDash(state);

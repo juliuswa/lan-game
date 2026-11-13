@@ -11,7 +11,7 @@
   input, button { font-size: 18px; padding: 8px 12px; border-radius: 6px; border: none; }
   button { background: #4363d8; color: white; cursor: pointer; }
   #game { display: none; gap: 16px; align-items: flex-start; }
-  canvas { background: #1d1d1d; border: 2px solid #333; border-radius: 8px; max-width: 95vw; }
+  canvas { cursor: crosshair; background: #1d1d1d; border: 2px solid #333; border-radius: 8px; max-width: 95vw; }
   #board { min-width: 180px; }
   #board li { list-style: none; margin: 4px 0; font-size: 18px; }
   #board ul { padding: 0; }
@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim (A/D rotate the arrow, you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps that hold you in place for 5s. Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Hold Space to aim at the mouse (you drift slowly), release to dash and shove players — recharges after 3 coins. Slam the goldpot into the arena edge and it breaks, reappearing elsewhere 3s later. Black holes teleport you to a random spot. The goldpot drops traps that hold you in place for 5s. Press Ä for 5 bonus coins. First to 20 coins wins the round, first to 5 rounds wins the match. After each round the lowest scorer picks a power-up (A/D or W/S to choose, Space to confirm).</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -45,6 +45,7 @@ const SPAWNER_POP_MS = 400;
 const coinFirstSeen = new Map();
 let spawnerAppearedAt = 0;
 let lastRenderTime = performance.now();
+let mouse = null;
 const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
 const keys = { up: false, down: false, left: false, right: false, aim: false };
 
@@ -96,6 +97,16 @@ const setKey = (event, pressed) => {
   keys[direction] = pressed;
 };
 
+canvas.addEventListener("mousemove", (event) => {
+  const bounds = canvas.getBoundingClientRect();
+  mouse = {
+    x: ((event.clientX - bounds.left) / bounds.width) * canvas.width,
+    y: ((event.clientY - bounds.top) / bounds.height) * canvas.height,
+  };
+});
+
+const mouseAimAngle = () => (mouse ? Math.atan2(mouse.y - predicted.y, mouse.x - predicted.x) : undefined);
+
 addEventListener("keydown", (e) => setKey(e, true));
 addEventListener("keyup", (e) => setKey(e, false));
 addEventListener("blur", () => Object.keys(keys).forEach((key) => (keys[key] = false)));
@@ -113,7 +124,7 @@ const reconcile = (state) => {
 const simulateStep = () => {
   if (!predicted || latestState.phase !== "playing" || predicted.trapped) return;
   if (!isMoving() && !keys.aim && !predicted.aiming && predicted.dashTicks === 0) return;
-  const input = { seq: nextSeq++, keys: { ...keys } };
+  const input = { seq: nextSeq++, keys: { ...keys, aimAngle: mouseAimAngle() } };
   pendingInputs.push(input);
   applyInput(predicted, input.keys);
   socket.send(JSON.stringify({ type: "input", ...input }));
