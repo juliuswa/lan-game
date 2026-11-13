@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coin Rush</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; }
+  h1 { margin: 12px 0 4px; }
+  #join { margin-top: 40px; display: flex; gap: 8px; }
+  input, button { font-size: 18px; padding: 8px 12px; border-radius: 6px; border: none; }
+  button { background: #4363d8; color: white; cursor: pointer; }
+  #game { display: none; gap: 16px; align-items: flex-start; }
+  canvas { background: #1d1d1d; border: 2px solid #333; border-radius: 8px; max-width: 95vw; }
+  #board { min-width: 180px; }
+  #board li { list-style: none; margin: 4px 0; font-size: 18px; }
+  #board ul { padding: 0; }
+</style>
+</head>
+<body>
+<h1>Coin Rush</h1>
+<p>Move with WASD / arrow keys. Collect coins — first to the target wins.</p>
+<form id="join">
+  <input id="name" placeholder="Your name" maxlength="16" autofocus required>
+  <button>Join</button>
+</form>
+<div id="game">
+  <canvas id="canvas" width="800" height="600"></canvas>
+  <div id="board"><h3>Scores</h3><ul id="scores"></ul></div>
+</div>
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const scoresList = document.getElementById("scores");
+const keyMap = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
+const input = { up: false, down: false, left: false, right: false };
+let playerId = null;
+let latestState = null;
+let predicted = null;
+let lastFrameTime = performance.now();
+const displayed = new Map();
+const SNAP_DISTANCE = 120;
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const isMoving = () => input.up || input.down || input.left || input.right;
+
+const advancePrediction = (dt) => {
+  const me = latestState.players.find((player) => player.id === playerId);
+  if (!me || latestState.winner) {
+    predicted = null;
+    return;
+  }
+  if (!predicted) predicted = { x: me.x, y: me.y };
+  const dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  const dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+  const length = Math.hypot(dx, dy) || 1;
+  const { speed, playerRadius, width, height } = latestState;
+  predicted.x = clamp(predicted.x + (dx / length) * speed * dt, playerRadius, width - playerRadius);
+  predicted.y = clamp(predicted.y + (dy / length) * speed * dt, playerRadius, height - playerRadius);
+  const error = Math.hypot(me.x - predicted.x, me.y - predicted.y);
+  if (error > SNAP_DISTANCE) {
+    predicted = { x: me.x, y: me.y };
+  } else if (!isMoving()) {
+    const pull = 1 - Math.exp(-dt * 8);
+    predicted.x += (me.x - predicted.x) * pull;
+    predicted.y += (me.y - predicted.y) * pull;
+  }
+};
+
+const smoothedPosition = (player, dt) => {
+  const previous = displayed.get(player.id);
+  const pull = 1 - Math.exp(-dt * 15);
+  const next = previous && Math.hypot(player.x - previous.x, player.y - previous.y) < SNAP_DISTANCE
+    ? { x: previous.x + (player.x - previous.x) * pull, y: previous.y + (player.y - previous.y) * pull }
+    : { x: player.x, y: player.y };
+  displayed.set(player.id, next);
+  return next;
+};
+
+const postJson = (url, body) =>
+  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+
+const setKey = (event, pressed) => {
+  const direction = keyMap[event.key.length === 1 ? event.key.toLowerCase() : event.key];
+  if (!direction || !playerId) return;
+  event.preventDefault();
+  if (input[direction] === pressed) return;
+  input[direction] = pressed;
+  postJson("/input", { id: playerId, input });
+};
+
+addEventListener("keydown", (e) => setKey(e, true));
+addEventListener("keyup", (e) => setKey(e, false));
+
+const drawCircle = (x, y, radius, color) => {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+};
+
+const render = (state, dt) => {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const coin of state.coins) drawCircle(coin.x, coin.y, state.coinRadius, "gold");
+  for (const player of state.players) {
+    const { x, y } = player.id === playerId && predicted ? predicted : smoothedPosition(player, dt);
+    drawCircle(x, y, state.playerRadius, player.color);
+    if (player.id === playerId) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "white";
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#eee";
+    ctx.font = "14px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(player.name, x, y - state.playerRadius - 6);
+  }
+  if (state.winner) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "white";
+    ctx.font = "bold 48px system-ui";
+    ctx.fillText(`${state.winner} wins!`, canvas.width / 2, canvas.height / 2);
+  }
+};
+
+const renderScores = (state) => {
+  scoresList.innerHTML = "";
+  for (const player of [...state.players].sort((a, b) => b.score - a.score)) {
+    const item = document.createElement("li");
+    item.textContent = `${player.name}: ${player.score} / ${state.winScore}`;
+    item.style.color = player.color;
+    scoresList.appendChild(item);
+  }
+};
+
+document.getElementById("join").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const { id } = await postJson("/join", { name: document.getElementById("name").value });
+  playerId = id;
+  document.getElementById("join").style.display = "none";
+  document.getElementById("game").style.display = "flex";
+  const events = new EventSource(`/events?id=${id}`);
+  events.onmessage = (message) => {
+    latestState = JSON.parse(message.data);
+    renderScores(latestState);
+  };
+  const frame = (now) => {
+    const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = now;
+    if (latestState) {
+      advancePrediction(dt);
+      render(latestState, dt);
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+  events.onerror = () => { events.close(); alert("Disconnected from server. Reload to rejoin."); };
+});
+</script>
+</body>
+</html>
