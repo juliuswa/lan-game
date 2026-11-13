@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Coin Rush</h1>
-<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Space to dash and shove players — recharges after 5 coins. First to the target wins.</p>
+<p>Move with WASD / arrow keys. Coins spawn around the wandering spawner — push it around. Slamming into a wall costs a coin. Space to dash and shove players — recharges after 5 coins. First to the target wins.</p>
 <form id="join">
   <input id="name" placeholder="Your name" maxlength="16" autofocus required>
   <button>Join</button>
@@ -136,15 +136,23 @@ const drawSpawner = (x, y) => {
   ctx.textBaseline = "alphabetic";
 };
 
+const drawWalls = () => {
+  ctx.fillStyle = "#555";
+  for (const wall of CONFIG.walls) ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+};
+
 const render = (now) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawWalls();
   const spawnerPosition = interpolatedPosition((snapshot) => snapshot.spawner, now - INTERPOLATION_DELAY_MS) || latestState.spawner;
   drawSpawner(spawnerPosition.x, spawnerPosition.y);
   for (const coin of latestState.coins) drawCircle(coin.x, coin.y, CONFIG.coinRadius, "gold");
   for (const player of latestState.players) {
     const isMe = player.id === playerId;
     const { x, y } = (isMe ? predicted : interpolatedPosition((snapshot) => snapshot.players.get(player.id), now - INTERPOLATION_DELAY_MS)) || player;
+    ctx.globalAlpha = player.hurt && Math.floor(now / 100) % 2 ? 0.3 : 1;
     drawCircle(x, y, CONFIG.playerRadius, player.color);
+    ctx.globalAlpha = 1;
     if (isMe) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = "white";

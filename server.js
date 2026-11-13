@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { WebSocketServer, WebSocket } = require("ws");
-const { CONFIG, applyInput, moveBy, clampToArena } = require("./shared");
+const { CONFIG, applyInput, moveBy, resolveWalls, isHardHit } = require("./shared");
 
 const PORT = 3000;
 const TICK_MS = 1000 / 60;
@@ -18,6 +18,8 @@ const SPAWNER_TURN_RATE = 0.2;
 const SPAWNER_PUSH_FRICTION = 0.92;
 const SPAWNER_DASH_PUSH = 12;
 const COIN_SCATTER_DISTANCE = 90;
+const WALL_HIT_COIN_LOSS = 1;
+const WALL_HIT_INVULNERABLE_MS = 1000;
 const COLORS = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe"];
 const STATIC_FILES = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
@@ -30,17 +32,21 @@ let spawner = null;
 let winner = null;
 let nextId = 1;
 
-const randomPosition = (margin) => ({
-  x: margin + Math.random() * (CONFIG.width - 2 * margin),
-  y: margin + Math.random() * (CONFIG.height - 2 * margin),
-});
+const randomPosition = (radius) => {
+  const position = {
+    x: radius + Math.random() * (CONFIG.width - 2 * radius),
+    y: radius + Math.random() * (CONFIG.height - 2 * radius),
+  };
+  resolveWalls(position, radius);
+  return position;
+};
 
 const spawnCoin = () => {
   const angle = Math.random() * Math.PI * 2;
   const minDistance = CONFIG.spawnerRadius + CONFIG.coinRadius + 4;
   const distance = minDistance + Math.random() * (COIN_SCATTER_DISTANCE - minDistance);
   const coin = { x: spawner.x + Math.cos(angle) * distance, y: spawner.y + Math.sin(angle) * distance };
-  clampToArena(coin, CONFIG.coinRadius * 2);
+  resolveWalls(coin, CONFIG.coinRadius * 2);
   return coin;
 };
 
@@ -51,18 +57,20 @@ const createSpawner = () => ({
   pushY: 0,
 });
 
+const reflect = (x, y, normal) => {
+  const dot = x * normal.x + y * normal.y;
+  if (dot >= 0) return { x, y };
+  return { x: x - 2 * dot * normal.x, y: y - 2 * dot * normal.y };
+};
+
 const bounceOffWalls = () => {
-  const r = CONFIG.spawnerRadius;
-  const headingX = Math.cos(spawner.heading);
-  const headingY = Math.sin(spawner.heading);
-  if ((spawner.x <= r && headingX < 0) || (spawner.x >= CONFIG.width - r && headingX > 0)) {
-    spawner.heading = Math.PI - spawner.heading;
-  }
-  if ((spawner.y <= r && headingY < 0) || (spawner.y >= CONFIG.height - r && headingY > 0)) {
-    spawner.heading = -spawner.heading;
-  }
-  if ((spawner.x <= r && spawner.pushX < 0) || (spawner.x >= CONFIG.width - r && spawner.pushX > 0)) spawner.pushX = -spawner.pushX;
-  if ((spawner.y <= r && spawner.pushY < 0) || (spawner.y >= CONFIG.height - r && spawner.pushY > 0)) spawner.pushY = -spawner.pushY;
+  const normal = resolveWalls(spawner, CONFIG.spawnerRadius);
+  if (!normal) return;
+  const heading = reflect(Math.cos(spawner.heading), Math.sin(spawner.heading), normal);
+  spawner.heading = Math.atan2(heading.y, heading.x);
+  const push = reflect(spawner.pushX, spawner.pushY, normal);
+  spawner.pushX = push.x;
+  spawner.pushY = push.y;
 };
 
 const moveSpawner = () => {
@@ -72,7 +80,6 @@ const moveSpawner = () => {
   spawner.pushX *= SPAWNER_PUSH_FRICTION;
   spawner.pushY *= SPAWNER_PUSH_FRICTION;
   bounceOffWalls();
-  clampToArena(spawner, CONFIG.spawnerRadius);
 };
 
 const overlapWithSpawner = (player) => {
@@ -88,7 +95,7 @@ const pushSpawner = (player) => {
   if (overlap <= 0) return;
   spawner.x += normalX * overlap;
   spawner.y += normalY * overlap;
-  clampToArena(spawner, CONFIG.spawnerRadius);
+  resolveWalls(spawner, CONFIG.spawnerRadius);
   if (player.dashTicks > 0) {
     player.dashTicks = 0;
     spawner.pushX = normalX * SPAWNER_DASH_PUSH;
@@ -107,7 +114,15 @@ const freshMotionState = () => ({
   dashCharge: CONFIG.dashCoinCost,
   knockX: 0,
   knockY: 0,
+  invulnerableUntil: 0,
 });
+
+const hitWall = (player) => {
+  const now = Date.now();
+  if (now < player.invulnerableUntil) return;
+  player.score = Math.max(0, player.score - WALL_HIT_COIN_LOSS);
+  player.invulnerableUntil = now + WALL_HIT_INVULNERABLE_MS;
+};
 
 const resetRound = () => {
   spawner = createSpawner();
@@ -135,14 +150,20 @@ const processInputs = (player) => {
   for (const { seq, keys } of player.pendingInputs.splice(0, MAX_INPUTS_PER_TICK)) {
     player.ack = seq;
     if (winner) continue;
-    applyInput(player, keys);
+    if (applyInput(player, keys)) hitWall(player);
     collectCoins(player);
   }
 };
 
 const applyKnockback = (player) => {
   if (!player.knockX && !player.knockY) return;
-  moveBy(player, player.knockX, player.knockY);
+  const wallNormal = moveBy(player, player.knockX, player.knockY);
+  if (isHardHit(wallNormal, player.knockX, player.knockY)) {
+    hitWall(player);
+    player.knockX = 0;
+    player.knockY = 0;
+    return;
+  }
   player.knockX *= KNOCKBACK_FRICTION;
   player.knockY *= KNOCKBACK_FRICTION;
   if (Math.hypot(player.knockX, player.knockY) < KNOCKBACK_MIN_SPEED) {
@@ -187,8 +208,21 @@ const broadcast = () => {
     winner,
     spawner: { x: spawner.x, y: spawner.y },
     coins,
-    players: [...players.values()].map(({ id, name, color, x, y, score, ack, dashTicks, dashX, dashY, faceX, faceY, dashCharge }) => ({
-      id, name, color, x, y, score, ack, dashTicks, dashX, dashY, faceX, faceY, dashCharge,
+    players: [...players.values()].map((player) => ({
+      id: player.id,
+      name: player.name,
+      color: player.color,
+      x: player.x,
+      y: player.y,
+      score: player.score,
+      ack: player.ack,
+      dashTicks: player.dashTicks,
+      dashX: player.dashX,
+      dashY: player.dashY,
+      faceX: player.faceX,
+      faceY: player.faceY,
+      dashCharge: player.dashCharge,
+      hurt: Date.now() < player.invulnerableUntil,
     })),
   });
   for (const player of players.values()) {
